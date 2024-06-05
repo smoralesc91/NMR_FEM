@@ -1,8 +1,6 @@
 import numpy as np
 import scipy.optimize as opt 
 
-#This file is a modification of Caizkun ILT
-
 #Solver for Least Distance Programming (LDP) with constraint.
 def ldp(G, h):
     m, n = G.shape
@@ -49,17 +47,22 @@ def ilt(t, F, bound, Nz, alpha, normed=False):
     U, H, Z = np.linalg.svd(R, full_matrices=False)     
     Z = Z.T
     H = np.diag(H)
+    #print ('\n-------------------------------')
+    #print ('1st SVD: rank(H) = %d' % np.linalg.matrix_rank(H))
 
     Hinv = np.diag(1.0/np.diag(H))
     Q, S, W = np.linalg.svd(C.dot(Z).dot(Hinv), full_matrices=False)  
     W = W.T
     S = np.diag(S)
+    #print ('2nd SVD: rank(S) = %d' % np.linalg.matrix_rank(S))
 
     Gamma = np.dot(Q.T, F)
     Sdiag = np.diag(S)
     Salpha = np.sqrt(Sdiag**2 + alpha**2)
     GammaTilde = Gamma*Sdiag/Salpha
     Stilde = np.diag(Salpha)
+    #print ('regularized: rank(Stilde) = %d' % np.linalg.matrix_rank(Stilde))
+    #print ('-------------------------------')
  
     Stilde_inv = np.diag(1.0/np.diag(Stilde))
     G = Z.dot(Hinv).dot(W).dot(Stilde_inv)
@@ -80,6 +83,6 @@ def ilt(t, F, bound, Nz, alpha, normed=False):
         return norm_data
 
     if not normed:
-        return 1/z, z*f
+        return 1/z, z*f#, res_lsq, res_reg
     else:
-        return 1/z, normalize_results(z*f)
+        return 1/z, normalize_results(z*f)#, res_lsq, res_reg
