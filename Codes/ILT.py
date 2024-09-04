@@ -1,5 +1,14 @@
 import numpy as np
 import scipy.optimize as opt 
+from Functions_NMR import normalize_results
+
+"""Module to implement routines of numerical inverse 
+Laplace tranform using Contin  algorithm [1]
+
+[1] Provencher, S. (1982)
+
+Original code was rewritten in python by caizkun.
+"""
 
 #Solver for Least Distance Programming (LDP) with constraint.
 def ldp(G, h):
@@ -47,22 +56,17 @@ def ilt(t, F, bound, Nz, alpha, normed=False):
     U, H, Z = np.linalg.svd(R, full_matrices=False)     
     Z = Z.T
     H = np.diag(H)
-    #print ('\n-------------------------------')
-    #print ('1st SVD: rank(H) = %d' % np.linalg.matrix_rank(H))
 
     Hinv = np.diag(1.0/np.diag(H))
     Q, S, W = np.linalg.svd(C.dot(Z).dot(Hinv), full_matrices=False)  
     W = W.T
     S = np.diag(S)
-    #print ('2nd SVD: rank(S) = %d' % np.linalg.matrix_rank(S))
 
     Gamma = np.dot(Q.T, F)
     Sdiag = np.diag(S)
     Salpha = np.sqrt(Sdiag**2 + alpha**2)
     GammaTilde = Gamma*Sdiag/Salpha
     Stilde = np.diag(Salpha)
-    #print ('regularized: rank(Stilde) = %d' % np.linalg.matrix_rank(Stilde))
-    #print ('-------------------------------')
  
     Stilde_inv = np.diag(1.0/np.diag(Stilde))
     G = Z.dot(Hinv).dot(W).dot(Stilde_inv)
@@ -73,16 +77,15 @@ def ilt(t, F, bound, Nz, alpha, normed=False):
     zf = np.dot(G, Xi + GammaTilde)
     f = zf/z
 
-    res_lsq = F - np.dot(C, zf)
-    res_reg = np.dot(R, zf)
+    F_restored = np.dot(C, zf)
 
-    #Normalize results data
-    def normalize_results(data):
-        data_max = np.max(np.abs(data))
-        norm_data = data/data_max
-        return norm_data
+    res_lsq = F - np.dot(C, zf)
+    mean_res_lsq = np.mean(res_lsq)
+    
+    res_reg = np.dot(R, zf)
+    mean_res_reg = np.mean(res_reg)
 
     if not normed:
-        return 1/z, z*f#, res_lsq, res_reg
+        return z, f, mean_res_lsq, mean_res_reg, F_restored
     else:
-        return 1/z, normalize_results(z*f)#, res_lsq, res_reg
+        return z, normalize_results(f), mean_res_lsq, mean_res_reg, normalize_results(F_restored)

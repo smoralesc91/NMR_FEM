@@ -192,14 +192,14 @@ def maxT2_ilt(x, y, threshold=0.01):
     peaks, _ = find_peaks(y, height=threshold*np.max(y))
     if len(peaks) > 1:
         sorted_peaks = sorted(peaks, key=lambda i: y[i], reverse=True)
-        max_y = [round(y[sorted_peaks[0]], 6), 
-                 round(y[sorted_peaks[1]], 6)]
-        x_position = [round(x[sorted_peaks[0]], 6), 
-                      round(x[sorted_peaks[1]], 6)]
+        max_y = [round(y[sorted_peaks[0]], 8), 
+                 round(y[sorted_peaks[1]], 8)]
+        x_position = [round(x[sorted_peaks[0]], 8), 
+                      round(x[sorted_peaks[1]], 8)]
     else:
         index_max_y = np.argmax(y)
-        max_y = [round(y[index_max_y], 6)]
-        x_position = [round(x[index_max_y], 6)]
+        max_y = [round(y[index_max_y], 8)]
+        x_position = [round(x[index_max_y], 8)]
     return max_y, x_position
 
 ########################################################################
@@ -211,12 +211,12 @@ def maxT2_ilt_1peak(x, y, threshold=0.01):
     peaks, _ = find_peaks(y, height=threshold*np.max(y))
     if len(peaks) > 1:
         sorted_peaks = sorted(peaks, key=lambda i: y[i], reverse=True)
-        max_y = round(y[sorted_peaks[0]], 6)
-        x_position = round(x[sorted_peaks[0]], 6)
+        max_y = round(y[sorted_peaks[0]], 8)
+        x_position = round(x[sorted_peaks[0]], 8)
     else:
         index_max_y = np.argmax(y)
-        max_y = round(y[index_max_y], 6)
-        x_position = round(x[index_max_y], 6)
+        max_y = round(y[index_max_y], 8)
+        x_position = round(x[index_max_y], 8)
     return max_y, x_position
 
 ########################################################################
