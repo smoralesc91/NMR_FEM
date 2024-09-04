@@ -3,16 +3,22 @@ import scipy.optimize as opt
 from tabulate import tabulate
 import matplotlib.pyplot as plt
 from scipy.signal import find_peaks
+import openturns as ot
+from fenics import *
 
+########################################################################
 #Normalize results data
 def normalize_results(data):
     '''
     Return: norm_data
     '''
-    data_max = np.max(np.abs(data))
-    norm_data = data/data_max
+    vector = np.array(data)
+    min_val = np.min(vector)
+    max_val = np.max(vector)
+    norm_data = (vector - min_val) / (max_val - min_val)
     return norm_data
 
+########################################################################
 # Fit data
 def T2star_fit(time_data, data):
     '''
@@ -22,7 +28,8 @@ def T2star_fit(time_data, data):
         return a*np.exp(-x/b)
     t2star = opt.curve_fit(exp_function, time_data, data)
     return t2star[0][1]
-    
+
+########################################################################
 # Calculating conventional T2star
 def T2star_conventional(T2B, rho, SVratio):
     '''
@@ -34,6 +41,7 @@ def T2star_conventional(T2B, rho, SVratio):
         T_2star = 1. / ((1. / T2B) + rho * SVratio)
     return T_2star
 
+########################################################################
 # Calculating analytical surface area and volume ratio
 def SV_ratio_analytical(radius, aspect_ratio):
     '''
@@ -52,6 +60,74 @@ def SV_ratio_analytical(radius, aspect_ratio):
     SVratio = S / V
     return S, V, SVratio
 
+########################################################################
+# Calculating magnetic saturation (Curie's law)
+# Global constants
+AVOGADRO_NUMBER = 6.0220e23
+H_PLANCK = 6.626e-34
+K_BOLTZMANN = 1.380e-23
+GAMMA = 267.5e6
+    
+# Fluid properties
+FLUID_PROPERTIES = {
+    'water': {'number_hydrogen': 2., 'mol_weight': 18.0153e-3, 'density': 9.97e2},
+    'oil': {'number_hydrogen': 12., 'mol_weight': 72.151e-3, 'density': 6.26e2},
+    'gas': {'number_hydrogen': 4., 'mol_weight': 16.04e-3, 'density': 6.56e-1}
+    }
+    
+def mag_sat(B_0, Temp, fluid):
+    if B_0 == 1 or Temp == 1 or fluid is None:
+        return 1
+        
+    assert fluid in FLUID_PROPERTIES, "Fluid must be 'water', 'oil', or 'gas'"
+        
+    properties = FLUID_PROPERTIES[fluid]
+    number_hydrogen = properties['number_hydrogen']
+    mol_weight = properties['mol_weight']
+    density = properties['density']
+        
+    proton_density = (number_hydrogen * AVOGADRO_NUMBER * density) / mol_weight
+    m_s = (proton_density * B_0 * (GAMMA**2) * (H_PLANCK**2)) / (4. * K_BOLTZMANN * Temp)
+    return m_s
+
+########################################################################
+# Mesh statistics
+def mesh_statistics(mesh, T2B, rho):
+    print("Dimensión de la malla:", mesh.topology().dim())
+    if mesh.topology().dim() == 1:
+        r2 = Expression('x[0]*x[0]', degree=3)
+        volume_mesh = assemble(Constant(4) * np.pi * r2 * dx(mesh))
+        surface_mesh = assemble(Constant(4) * np.pi * r2 * ds(mesh))
+    else:
+        volume_mesh = assemble(Constant(1) * dx(mesh))
+        surface_mesh = assemble(Constant(1) * ds(mesh))
+        
+    print("Volumen de la malla:", volume_mesh)
+    print("Área superficial de la malla:", surface_mesh)
+    
+    surface_volume_ratio = surface_mesh / volume_mesh
+        
+    mesh_data = [
+                ["hmin", "{:.4e}".format(mesh.hmin())],
+                ["hmax", "{:.4e}".format(mesh.hmax())],
+                ["num. cells", mesh.num_cells()],
+                ["num. edges", mesh.num_edges()],
+                ["num. entities 0d", mesh.num_entities(0)],
+                ["num. entities 1d", mesh.num_entities(1)],
+                ["num. entities 2d", mesh.num_entities(2)],
+                ["num. entities 3d", mesh.num_entities(3)],
+                ["num. faces", mesh.num_faces()],
+                ["num. facets", mesh.num_facets()],
+                ["num. vertices", mesh.num_vertices()],
+                ["Volume", "{:.4e} [m^3]".format(volume_mesh)],
+                ["Surface area", "{:.4e} [m^2]".format(surface_mesh)],
+                ["Surface to Volume ratio", "{:.4e} [m^-1]".format(surface_volume_ratio)],
+                ["T2star conventional", "{:.4e} [s]".format(T2star_conventional(T2B, rho, surface_volume_ratio))]
+            ]
+        
+    print(tabulate(mesh_data, headers=["Mesh statistics", ""], tablefmt="github"))
+
+########################################################################
 # Brownstein-Tarr number
 def BrownsteinTarr_number(r, rho, D, text=True):
     '''
@@ -72,6 +148,7 @@ def BrownsteinTarr_number(r, rho, D, text=True):
 
     return kappa, kappa_regime
 
+########################################################################
 # Absolute and relative global error, L2 norm and Infty norm
 def error_estimation(true_data, measured_data, tol=1.e-10, table=False):
     '''
@@ -79,24 +156,37 @@ def error_estimation(true_data, measured_data, tol=1.e-10, table=False):
     '''
     abs_error_glob = np.mean(np.abs(measured_data-true_data))
     rel_error_glob = np.mean(np.abs(measured_data-true_data)/(np.abs(true_data)+tol))*100
-    l2_norm = np.linalg.norm(measured_data-true_data, ord=2)
-    inf_norm = np.linalg.norm(measured_data-true_data, ord=np.inf)
+    if np.size(true_data) > 1:
+        l2_norm = np.linalg.norm(measured_data-true_data, ord=2)
+        inf_norm = np.linalg.norm(measured_data-true_data, ord=np.inf)
     
     if table:
         headers = ["Metric", "Value"]
-        values = [
-            ["Absolute Global Error", abs_error_glob],
-            ["Relative Global Error (%)", rel_error_glob],
-            ["L2 Norm", l2_norm],
-            ["Infinity Norm", inf_norm]
-        ]
+        if np.size(true_data) > 1:
+            values = [
+                ["Absolute Global Error", abs_error_glob],
+                ["Relative Global Error (%)", rel_error_glob],
+                ["L2 Norm", l2_norm],
+                ["Infinity Norm", inf_norm]
+            ]
+        else:
+            values = [
+                ["Absolute Global Error", abs_error_glob],
+                ["Relative Global Error (%)", rel_error_glob],
+            ]
+        
         tab = tabulate(values, headers, tablefmt="github")
         print(tab)
     
-    return abs_error_glob, rel_error_glob, l2_norm, inf_norm
+    if np.size(true_data) > 1:
+        return abs_error_glob, rel_error_glob, l2_norm, inf_norm
+    else:
+        return abs_error_glob, rel_error_glob
 
+########################################################################
 def maxT2_ilt(x, y, threshold=0.01):
     '''
+    Function for >1 peak
     Return: max_y, x_position
     '''
     peaks, _ = find_peaks(y, height=threshold*np.max(y))
@@ -112,72 +202,147 @@ def maxT2_ilt(x, y, threshold=0.01):
         x_position = [round(x[index_max_y], 6)]
     return max_y, x_position
 
-# Plot single graph
-def plot_single_graph(xdata=None, ydata=None, label='data', title='figure',
-                     figsize=(20, 4), savefig=None):
+########################################################################
+def maxT2_ilt_1peak(x, y, threshold=0.01):
+    '''
+    Function for 1 peak
+    Return: max_y, x_position
+    '''
+    peaks, _ = find_peaks(y, height=threshold*np.max(y))
+    if len(peaks) > 1:
+        sorted_peaks = sorted(peaks, key=lambda i: y[i], reverse=True)
+        max_y = round(y[sorted_peaks[0]], 6)
+        x_position = round(x[sorted_peaks[0]], 6)
+    else:
+        index_max_y = np.argmax(y)
+        max_y = round(y[index_max_y], 6)
+        x_position = round(x[index_max_y], 6)
+    return max_y, x_position
+
+########################################################################
+def OT_kernel_pdf(data, data_sampling=100):
+    data_ot = ot.Sample([[value] for value in data])
+    kernel = ot.Epanechnikov()
+    kernelSmoothing = ot.KernelSmoothing(kernel)
+    fittedDistribution = kernelSmoothing.build(data_ot)
+    x = np.linspace(np.min(data), np.max(data), data_sampling)
+    y = np.array([fittedDistribution.computePDF([xi]) for xi in x])
+    return x, y
+
+########################################################################
+# PLOTTING FUNCTIONS
+def plot_single_graph(xdata=None, ydata=None, label='data', title='figure', xlabel='x', ylabel='y', xscale='linear',
+                      marker='', linestyle='solid', color=None, xlim=None, ylim=None,
+                      figsize=(20, 4), savefig=None):
+    
+    assert xscale in ['linear', 'log'], "xscale must be 'linear' or 'log'"
     
     plt.figure(figsize=figsize)
-    plt.plot(xdata, ydata, label=label)
+    
+    plt.plot(xdata, ydata, marker=marker, linestyle=linestyle, color=color, label=label)
+    plt.xscale(xscale)
+    if xlim:
+        plt.xlim(xlim)
+    if ylim:
+        plt.ylim(ylim)
     plt.legend()
     plt.title(title)
+    plt.xlabel(xlabel)
+    plt.ylabel(ylabel)
+    plt.grid(True, which='both')
 
     plt.tight_layout()
     if savefig is not None:
         plt.savefig(savefig)
     plt.show()
 
-# Plot dual graphs
-def plot_dual_graphs(xdata1=None, ydata1=None, label1='data1', title1='figure1',
-                     xdata2=None, ydata2=None, label2='data2', title2='figure2',
+def plot_dual_graphs(xdata1=None, ydata1=None, label1='data1', title1='figure1', xlabel1='x', ylabel1='y', xscale1='linear',
+                     xdata2=None, ydata2=None, label2='data2', title2='figure2', xlabel2='x', ylabel2='y', xscale2='linear',
+                     marker1='', linestyle1='solid', marker2='', linestyle2='solid', color1=None, color2=None,
+                     xlim1=None, ylim1=None, xlim2=None, ylim2=None,
                      figsize=(20, 4), savefig=None):
 
+    assert xscale1 in ['linear', 'log'], "xscale1 must be 'linear' or 'log'"
+    assert xscale2 in ['linear', 'log'], "xscale2 must be 'linear' or 'log'"
+    
     fig, axs = plt.subplots(1, 2, figsize=figsize)
 
-    axs[0].plot(xdata1, ydata1, label=label1)
+    axs[0].plot(xdata1, ydata1, marker=marker1, linestyle=linestyle1, color=color1, label=label1)
+    axs[0].set_xscale(xscale1)
+    if xlim1:
+        axs[0].set_xlim(xlim1)
+    if ylim1:
+        axs[0].set_ylim(ylim1)
     axs[0].legend()
     axs[0].set_title(title1)
-    axs[0].grid(True)
+    axs[0].set_xlabel(xlabel1)
+    axs[0].set_ylabel(ylabel1)
+    axs[0].grid(True, which='both')
 
-    axs[1].plot(xdata2, ydata2, label=label2)
+    axs[1].plot(xdata2, ydata2, marker=marker2, linestyle=linestyle2, color=color2, label=label2)
+    axs[1].set_xscale(xscale2)
+    if xlim2:
+        axs[1].set_xlim(xlim2)
+    if ylim2:
+        axs[1].set_ylim(ylim2)
     axs[1].legend()
     axs[1].set_title(title2)
-    axs[1].grid(True)
+    axs[1].set_xlabel(xlabel2)
+    axs[1].set_ylabel(ylabel2)
+    axs[1].grid(True, which='both')
 
     plt.tight_layout()
     if savefig is not None:
         plt.savefig(savefig)
     plt.show()
 
-# Plot tripe graphs
-def plot_tripĺe_graphs(xdata1=None, ydata1=None, label1='data1', title1='figure1', xscale1='lineal',
-                       xdata2=None, ydata2=None, label2='data2', title2='figure2', xscale2='lineal',
-                       xdata3=None, ydata3=None, label3='data3', title3='figure3', xscale3='lineal',
-                       figsize=(20,4), savefig=None):
+def plot_triple_graphs(xdata1=None, ydata1=None, label1='data1', title1='figure1', xlabel1='x', ylabel1='y', xscale1='linear',
+                       xdata2=None, ydata2=None, label2='data2', title2='figure2', xlabel2='x', ylabel2='y', xscale2='linear',
+                       xdata3=None, ydata3=None, label3='data3', title3='figure3', xlabel3='x', ylabel3='y', xscale3='linear',
+                       marker1='', linestyle1='solid', marker2='', linestyle2='solid', marker3='', linestyle3='solid',
+                       color1=None, color2=None, color3=None, xlim1=None, ylim1=None, xlim2=None, ylim2=None, xlim3=None, ylim3=None,
+                       figsize=(20, 4), savefig=None):
+
+    assert xscale1 in ['linear', 'log'], "xscale1 must be 'linear' or 'log'"
+    assert xscale2 in ['linear', 'log'], "xscale2 must be 'linear' or 'log'"
+    assert xscale3 in ['linear', 'log'], "xscale3 must be 'linear' or 'log'"
 
     fig, axs = plt.subplots(1, 3, figsize=figsize)
 
-    if xscale1 == 'lineal':
-        axs[0].plot(xdata1, ydata1, label=label1)
-    elif xscale1 == 'log':
-        axs[0].semilogx(xdata1, ydata1, label=label1)
+    axs[0].plot(xdata1, ydata1, marker=marker1, linestyle=linestyle1, color=color1, label=label1)
+    axs[0].set_xscale(xscale1)
+    if xlim1:
+        axs[0].set_xlim(xlim1)
+    if ylim1:
+        axs[0].set_ylim(ylim1)
     axs[0].legend()
     axs[0].set_title(title1)
+    axs[0].set_xlabel(xlabel1)
+    axs[0].set_ylabel(ylabel1)
     axs[0].grid(True, which='both')
 
-    if xscale2 == 'lineal':
-        axs[1].plot(xdata2, ydata2, label=label2)
-    elif xscale2 == 'log':
-        axs[1].semilogx(xdata2, ydata2, label=label2)
+    axs[1].plot(xdata2, ydata2, marker=marker2, linestyle=linestyle2, color=color2, label=label2)
+    axs[1].set_xscale(xscale2)
+    if xlim2:
+        axs[1].set_xlim(xlim2)
+    if ylim2:
+        axs[1].set_ylim(ylim2)
     axs[1].legend()
     axs[1].set_title(title2)
+    axs[1].set_xlabel(xlabel2)
+    axs[1].set_ylabel(ylabel2)
     axs[1].grid(True, which='both')
 
-    if xscale3 == 'lineal':
-        axs[2].plot(xdata3, ydata3, label=label3)
-    elif xscale3 == 'log':
-        axs[2].semilogx(xdata3, ydata3, label=label3)
+    axs[2].plot(xdata3, ydata3, marker=marker3, linestyle=linestyle3, color=color3, label=label3)
+    axs[2].set_xscale(xscale3)
+    if xlim3:
+        axs[2].set_xlim(xlim3)
+    if ylim3:
+        axs[2].set_ylim(ylim3)
     axs[2].legend()
     axs[2].set_title(title3)
+    axs[2].set_xlabel(xlabel3)
+    axs[2].set_ylabel(ylabel3)
     axs[2].grid(True, which='both')
 
     plt.tight_layout()
