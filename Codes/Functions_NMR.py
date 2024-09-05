@@ -7,7 +7,7 @@ import openturns as ot
 from fenics import *
 
 ########################################################################
-#Normalize results data
+# Normalize results data
 def normalize_results(data):
     '''
     Return: norm_data
@@ -15,8 +15,7 @@ def normalize_results(data):
     vector = np.array(data)
     min_val = np.min(vector)
     max_val = np.max(vector)
-    norm_data = (vector - min_val) / (max_val - min_val)
-    return norm_data
+    return (vector - min_val) / (max_val - min_val)
 
 ########################################################################
 # Fit data
@@ -25,9 +24,9 @@ def T2star_fit(time_data, data):
     Return: t2star[0][1]
     '''
     def exp_function(x, a, b):
-        return a*np.exp(-x/b)
-    t2star = opt.curve_fit(exp_function, time_data, data)
-    return t2star[0][1]
+        return a * np.exp(-x / b)
+    t2star, _ = opt.curve_fit(exp_function, time_data, data)
+    return t2star[1]
 
 ########################################################################
 # Calculating conventional T2star
@@ -36,10 +35,8 @@ def T2star_conventional(T2B, rho, SVratio):
     Return: T_2star
     '''
     if T2B <= 0:
-        T_2star = 1. / (rho * SVratio)
-    else:
-        T_2star = 1. / ((1. / T2B) + rho * SVratio)
-    return T_2star
+        return 1. / (rho * SVratio)
+    return 1. / ((1. / T2B) + rho * SVratio)
 
 ########################################################################
 # Calculating analytical surface area and volume ratio
@@ -48,18 +45,16 @@ def SV_ratio_analytical(radius, aspect_ratio):
     Return: S, V, SVratio
     '''
     if aspect_ratio == 1:
-        S = 4. * np.pi * np.power(radius, 2)
-        V = 4. * np.pi * np.power(radius, 3) / 3.
+        S = 4. * np.pi * radius**2
+        V = 4. * np.pi * radius**3 / 3.
     else:
         a = radius
-        b = radius*aspect_ratio
-        c = radius*aspect_ratio
-        S = 4. * np.pi * (((a * b) ** 1.6 + (a * c) ** 1.6 + (b * c) ** 1.6) / 3.) ** (1. / 1.6)
+        b = c = radius * aspect_ratio
+        S = 4. * np.pi * (((a * b)**1.6 + (a * c)**1.6 + (b * c)**1.6) / 3.)**(1. / 1.6)
         V = 4. * np.pi * a * b * c / 3.
             
-    SVratio = S / V
-    return S, V, SVratio
-
+    return S, V, S/V
+    
 ########################################################################
 # Calculating magnetic saturation (Curie's law)
 # Global constants
@@ -93,37 +88,34 @@ def mag_sat(B_0, Temp, fluid):
 ########################################################################
 # Mesh statistics
 def mesh_statistics(mesh, T2B, rho):
-    print("Dimensión de la malla:", mesh.topology().dim())
-    if mesh.topology().dim() == 1:
+    dim = mesh.topology().dim()
+    if dim == 1:
         r2 = Expression('x[0]*x[0]', degree=3)
-        volume_mesh = assemble(Constant(4) * np.pi * r2 * dx(mesh))
-        surface_mesh = assemble(Constant(4) * np.pi * r2 * ds(mesh))
+        volume_mesh = assemble(4 * np.pi * r2 * dx(mesh))
+        surface_mesh = assemble(4 * np.pi * r2 * ds(mesh))
     else:
         volume_mesh = assemble(Constant(1) * dx(mesh))
         surface_mesh = assemble(Constant(1) * ds(mesh))
-        
-    print("Volumen de la malla:", volume_mesh)
-    print("Área superficial de la malla:", surface_mesh)
     
     surface_volume_ratio = surface_mesh / volume_mesh
         
     mesh_data = [
-                ["hmin", "{:.4e}".format(mesh.hmin())],
-                ["hmax", "{:.4e}".format(mesh.hmax())],
-                ["num. cells", mesh.num_cells()],
-                ["num. edges", mesh.num_edges()],
-                ["num. entities 0d", mesh.num_entities(0)],
-                ["num. entities 1d", mesh.num_entities(1)],
-                ["num. entities 2d", mesh.num_entities(2)],
-                ["num. entities 3d", mesh.num_entities(3)],
-                ["num. faces", mesh.num_faces()],
-                ["num. facets", mesh.num_facets()],
-                ["num. vertices", mesh.num_vertices()],
-                ["Volume", "{:.4e} [m^3]".format(volume_mesh)],
-                ["Surface area", "{:.4e} [m^2]".format(surface_mesh)],
-                ["Surface to Volume ratio", "{:.4e} [m^-1]".format(surface_volume_ratio)],
-                ["T2star conventional", "{:.4e} [s]".format(T2star_conventional(T2B, rho, surface_volume_ratio))]
-            ]
+        ["hmin", f"{mesh.hmin():.4e}"],
+        ["hmax", f"{mesh.hmax():.4e}"],
+        ["num. cells", mesh.num_cells()],
+        ["num. edges", mesh.num_edges()],
+        ["num. entities 0d", mesh.num_entities(0)],
+        ["num. entities 1d", mesh.num_entities(1)],
+        ["num. entities 2d", mesh.num_entities(2)],
+        ["num. entities 3d", mesh.num_entities(3)],
+        ["num. faces", mesh.num_faces()],
+        ["num. facets", mesh.num_facets()],
+        ["num. vertices", mesh.num_vertices()],
+        ["Mesh Volume", f"{volume_mesh:.4e} [m^3]"],
+        ["Mesh Surface area", f"{surface_mesh:.4e} [m^2]"],
+        ["Mesh Surface to Volume ratio", f"{surface_volume_ratio:.4e} [m^-1]"],
+        ["T2star conventional", f"{T2star_conventional(T2B, rho, surface_volume_ratio):.4e} [s]"]
+    ]
         
     print(tabulate(mesh_data, headers=["Mesh statistics", ""], tablefmt="github"))
 
@@ -136,14 +128,14 @@ def BrownsteinTarr_number(r, rho, D, text=True):
     kappa = (r * rho) / D
     if kappa <= 1:
         kappa_regime = 'Fast diffusion'
-    elif 1 <= kappa <= 10:
+    elif kappa <= 10:
         kappa_regime = 'Intermediate diffusion'
-    else:  # kappa > 10
+    else:
         kappa_regime = 'Slow diffusion'
 
     if text:
         table = [["Pore [m]", "Regime", "Kappa"],
-                 ["{:.2e}".format(r), kappa_regime, "{:.4f}".format(kappa)]]
+                 [f"{r:.2e}", kappa_regime, f"{kappa:.4f}"]]
         print(tabulate(table, headers="firstrow", tablefmt="github"))
 
     return kappa, kappa_regime
@@ -154,48 +146,42 @@ def error_estimation(true_data, measured_data, tol=1.e-10, table=False):
     '''
     Return: abs_error_glob, rel_error_glob, l2_norm, inf_norm
     '''
-    abs_error_glob = np.mean(np.abs(measured_data-true_data))
-    rel_error_glob = np.mean(np.abs(measured_data-true_data)/(np.abs(true_data)+tol))*100
+    abs_error_glob = np.mean(np.abs(measured_data - true_data))
+    rel_error_glob = np.mean(np.abs(measured_data - true_data) / (np.abs(true_data) + tol)) * 100
+
     if np.size(true_data) > 1:
-        l2_norm = np.linalg.norm(measured_data-true_data, ord=2)
-        inf_norm = np.linalg.norm(measured_data-true_data, ord=np.inf)
-    
+        l2_norm = np.linalg.norm(measured_data - true_data, ord=2)
+        inf_norm = np.linalg.norm(measured_data - true_data, ord=np.inf)
+    else:
+        l2_norm = inf_norm = None
+
     if table:
         headers = ["Metric", "Value"]
-        if np.size(true_data) > 1:
-            values = [
-                ["Absolute Global Error", abs_error_glob],
-                ["Relative Global Error (%)", rel_error_glob],
+        values = [
+            ["Absolute Global Error", abs_error_glob],
+            ["Relative Global Error (%)", rel_error_glob]
+        ]
+        if l2_norm is not None and inf_norm is not None:
+            values.extend([
                 ["L2 Norm", l2_norm],
                 ["Infinity Norm", inf_norm]
-            ]
-        else:
-            values = [
-                ["Absolute Global Error", abs_error_glob],
-                ["Relative Global Error (%)", rel_error_glob],
-            ]
+            ])
         
-        tab = tabulate(values, headers, tablefmt="github")
-        print(tab)
-    
-    if np.size(true_data) > 1:
-        return abs_error_glob, rel_error_glob, l2_norm, inf_norm
-    else:
-        return abs_error_glob, rel_error_glob
+        print(tabulate(values, headers, tablefmt="github"))
+
+    return (abs_error_glob, rel_error_glob, l2_norm, inf_norm) if l2_norm is not None else (abs_error_glob, rel_error_glob)
 
 ########################################################################
+# Function for >1 peak
 def maxT2_ilt(x, y, threshold=0.01):
     '''
-    Function for >1 peak
     Return: max_y, x_position
     '''
-    peaks, _ = find_peaks(y, height=threshold*np.max(y))
+    peaks, _ = find_peaks(y, height=threshold * np.max(y))
     if len(peaks) > 1:
-        sorted_peaks = sorted(peaks, key=lambda i: y[i], reverse=True)
-        max_y = [round(y[sorted_peaks[0]], 8), 
-                 round(y[sorted_peaks[1]], 8)]
-        x_position = [round(x[sorted_peaks[0]], 8), 
-                      round(x[sorted_peaks[1]], 8)]
+        sorted_peaks = sorted(peaks, key=lambda i: y[i], reverse=True)[:2]
+        max_y = [round(y[i], 8) for i in sorted_peaks]
+        x_position = [round(x[i], 8) for i in sorted_peaks]
     else:
         index_max_y = np.argmax(y)
         max_y = [round(y[index_max_y], 8)]
@@ -203,24 +189,26 @@ def maxT2_ilt(x, y, threshold=0.01):
     return max_y, x_position
 
 ########################################################################
+# Function for 1 peak
 def maxT2_ilt_1peak(x, y, threshold=0.01):
     '''
-    Function for 1 peak
     Return: max_y, x_position
     '''
-    peaks, _ = find_peaks(y, height=threshold*np.max(y))
+    peaks, _ = find_peaks(y, height=threshold * np.max(y))
     if len(peaks) > 1:
-        sorted_peaks = sorted(peaks, key=lambda i: y[i], reverse=True)
-        max_y = round(y[sorted_peaks[0]], 8)
-        x_position = round(x[sorted_peaks[0]], 8)
+        index_max_y = sorted(peaks, key=lambda i: y[i], reverse=True)[0]
     else:
         index_max_y = np.argmax(y)
-        max_y = round(y[index_max_y], 8)
-        x_position = round(x[index_max_y], 8)
+    max_y = round(y[index_max_y], 8)
+    x_position = round(x[index_max_y], 8)
     return max_y, x_position
 
 ########################################################################
+# Kernel PDF estimation
 def OT_kernel_pdf(data, data_sampling=100):
+    '''
+    Return: x, y
+    '''
     data_ot = ot.Sample([[value] for value in data])
     kernel = ot.Epanechnikov()
     kernelSmoothing = ot.KernelSmoothing(kernel)
@@ -231,6 +219,7 @@ def OT_kernel_pdf(data, data_sampling=100):
 
 ########################################################################
 # PLOTTING FUNCTIONS
+# Plot single graph
 def plot_single_graph(xdata=None, ydata=None, label='data', title='figure', xlabel='x', ylabel='y', xscale='linear',
                       marker='', linestyle='solid', color=None, xlim=None, ylim=None,
                       figsize=(20, 4), savefig=None):
@@ -238,7 +227,6 @@ def plot_single_graph(xdata=None, ydata=None, label='data', title='figure', xlab
     assert xscale in ['linear', 'log'], "xscale must be 'linear' or 'log'"
     
     plt.figure(figsize=figsize)
-    
     plt.plot(xdata, ydata, marker=marker, linestyle=linestyle, color=color, label=label)
     plt.xscale(xscale)
     if xlim:
@@ -250,12 +238,13 @@ def plot_single_graph(xdata=None, ydata=None, label='data', title='figure', xlab
     plt.xlabel(xlabel)
     plt.ylabel(ylabel)
     plt.grid(True, which='both')
-
     plt.tight_layout()
-    if savefig is not None:
+    if savefig:
         plt.savefig(savefig)
     plt.show()
 
+########################################################################
+# Plot dual graphs
 def plot_dual_graphs(xdata1=None, ydata1=None, label1='data1', title1='figure1', xlabel1='x', ylabel1='y', xscale1='linear',
                      xdata2=None, ydata2=None, label2='data2', title2='figure2', xlabel2='x', ylabel2='y', xscale2='linear',
                      marker1='', linestyle1='solid', marker2='', linestyle2='solid', color1=None, color2=None,
@@ -292,10 +281,12 @@ def plot_dual_graphs(xdata1=None, ydata1=None, label1='data1', title1='figure1',
     axs[1].grid(True, which='both')
 
     plt.tight_layout()
-    if savefig is not None:
+    if savefig:
         plt.savefig(savefig)
     plt.show()
 
+########################################################################
+# Plot triple graphs
 def plot_triple_graphs(xdata1=None, ydata1=None, label1='data1', title1='figure1', xlabel1='x', ylabel1='y', xscale1='linear',
                        xdata2=None, ydata2=None, label2='data2', title2='figure2', xlabel2='x', ylabel2='y', xscale2='linear',
                        xdata3=None, ydata3=None, label3='data3', title3='figure3', xlabel3='x', ylabel3='y', xscale3='linear',
@@ -346,6 +337,6 @@ def plot_triple_graphs(xdata1=None, ydata1=None, label1='data1', title1='figure1
     axs[2].grid(True, which='both')
 
     plt.tight_layout()
-    if savefig is not None:
+    if savefig:
         plt.savefig(savefig)
     plt.show()

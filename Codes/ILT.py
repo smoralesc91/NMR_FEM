@@ -77,7 +77,7 @@ def ilt(t, F, bound, Nz, alpha, normed=False):
     zf = np.dot(G, Xi + GammaTilde)
     f = zf/z
 
-    F_restored = np.dot(C, zf)
+    FIT = np.dot(C, zf)
 
     res_lsq = F - np.dot(C, zf)
     mean_res_lsq = np.mean(res_lsq)
@@ -86,6 +86,6 @@ def ilt(t, F, bound, Nz, alpha, normed=False):
     mean_res_reg = np.mean(res_reg)
 
     if not normed:
-        return z, f, mean_res_lsq, mean_res_reg, F_restored
+        return z, f, mean_res_lsq, mean_res_reg, FIT
     else:
-        return z, normalize_results(f), mean_res_lsq, mean_res_reg, normalize_results(F_restored)
+        return z, normalize_results(f), mean_res_lsq, mean_res_reg, normalize_results(FIT)
