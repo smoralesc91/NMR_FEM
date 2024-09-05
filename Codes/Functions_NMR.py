@@ -6,6 +6,13 @@ from scipy.signal import find_peaks
 import openturns as ot
 from fenics import *
 
+__version__ = "1.0"
+
+def NMR_Functions(__version__):
+    pass
+
+NMR_Functions.__version__ = __version__
+
 ########################################################################
 # Normalize results data
 def normalize_results(data):

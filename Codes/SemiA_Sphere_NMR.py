@@ -5,6 +5,8 @@ import scipy.optimize as opt
 from scipy.integrate import quad
 from Functions_NMR import mag_sat
 
+__version__ = "1.0"
+
 def NMR_SemiA_sphere(radius=1., T2B=1., diffusion=1., rho=1.,
                      B_0=0.05, Temp=303.15, fluid='water',
                      n_terms=10, root_lim_left=np.pi, root_lim_right=np.pi, root_lim_tol=1.e-5, 
@@ -68,3 +70,5 @@ def NMR_SemiA_sphere(radius=1., T2B=1., diffusion=1., rho=1.,
         return mag_assemble
     elif return_data == 'mag_amounts':
         return mag_amounts
+
+NMR_SemiA_sphere.__version__ = __version__

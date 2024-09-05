@@ -2,6 +2,8 @@ import numpy as np
 from scipy.integrate import quad
 from Functions_NMR import mag_sat, SV_ratio_analytical, T2star_conventional
 
+__version__ = "1.0"
+
 #TO-DO: añadir opciones para estimar T2 bulk
 def NMR_Conventional(radius=1, aspect_ratio = 1, #SV_ratio 
                      T2B=1., diffusion=2.3e-9, rho=30e-6, #T2_star
@@ -38,3 +40,5 @@ def NMR_Conventional(radius=1, aspect_ratio = 1, #SV_ratio
         return mag_assemble
     elif return_data == 'mag_amounts':
         return mag_amounts
+
+NMR_Conventional.__version__ = __version__

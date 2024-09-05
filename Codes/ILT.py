@@ -10,6 +10,8 @@ Laplace tranform using Contin  algorithm [1]
 Original code was rewritten in python by caizkun.
 """
 
+__version__ = "1.0"
+
 #Solver for Least Distance Programming (LDP) with constraint.
 def ldp(G, h):
     m, n = G.shape
@@ -89,3 +91,5 @@ def ilt(t, F, bound, Nz, alpha, normed=False):
         return z, f, mean_res_lsq, mean_res_reg, FIT
     else:
         return z, normalize_results(f), mean_res_lsq, mean_res_reg, normalize_results(FIT)
+
+ilt.__version__ = __version__

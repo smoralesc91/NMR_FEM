@@ -7,6 +7,8 @@ from Functions_NMR import T2star_conventional
 from Functions_NMR import mag_sat
 from Functions_NMR import mesh_statistics
 
+__version__ = "1.0"
+
 set_log_level(30)
 
 parameters['allow_extrapolation'] = True
@@ -122,3 +124,5 @@ def NMR_FEM(radius=1., mesh_res=10, mesh_stats=False,       # mesh options
         return mag_assemble
     elif return_data == 'mag_amounts':
         return mag_amounts
+
+NMR_FEM.__version__ = __version__
