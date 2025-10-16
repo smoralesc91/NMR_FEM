@@ -3,6 +3,8 @@ import scipy.optimize as opt
 from tabulate import tabulate
 import matplotlib.pyplot as plt
 from scipy.signal import find_peaks
+from sklearn.metrics import r2_score
+from scipy.optimize import fsolve
 import openturns as ot
 from fenics import *
 
@@ -148,35 +150,180 @@ def BrownsteinTarr_number(r, rho, D, text=True):
     return kappa, kappa_regime
 
 ########################################################################
-# Absolute and relative global error, L2 norm and Infty norm
-def error_estimation(true_data, measured_data, tol=1.e-10, table=False):
-    '''
-    Return: abs_error_glob, rel_error_glob, l2_norm, inf_norm
-    '''
-    abs_error_glob = np.mean(np.abs(measured_data - true_data))
-    rel_error_glob = np.mean(np.abs(measured_data - true_data) / (np.abs(true_data) + tol)) * 100
+import numpy as np
 
-    if np.size(true_data) > 1:
-        l2_norm = np.linalg.norm(measured_data - true_data, ord=2)
-        inf_norm = np.linalg.norm(measured_data - true_data, ord=np.inf)
+def compute_error_metrics(
+    y_true,
+    y_pred,
+    *,
+    tol: float = 1e-12,
+    # tipo de error relativo puntual
+    relative: str | None = "mape",   # "mape" | "smape" | None
+    baseline: str = "true",          # denominador en MAPE: "true" (|y_true|) o "pred" (|y_pred|)
+    # RMSE normalizado
+    nrmse: str | None = None,        # None | "range" | "mean"
+    # ponderación
+    weights = None,                  # array-like o None
+    t = None,                        # vector de tiempos (no uniforme) -> ponderación trapezoidal
+    # salida
+    table: bool = False,             # imprime tabla si se desea
+    digits: int = 6                  # decimales al imprimir
+) -> dict:
+    """
+    Calcula métricas de error entre y_true y y_pred.
+
+    Devuelve un dict con:
+      - count_used
+      - MAE, MSE, RMSE, (AbsErrorMean alias de MAE)
+      - L1_norm, L2_norm, Linf_norm
+      - RelL2
+      - MAPE_percent (si relative="mape")
+      - RelErrorMean_percent (alias de MAPE_percent para compatibilidad)
+      - sMAPE_percent (si relative="smape")
+      - R2
+      - NRMSE_range / NRMSE_mean (si se solicita)
+    """
+    y_true = np.asarray(y_true, dtype=float).ravel()
+    y_pred = np.asarray(y_pred, dtype=float).ravel()
+    if y_true.shape != y_pred.shape:
+        raise ValueError("Las señales de entrada deben tener la misma forma.")
+
+    # filtra no finitos
+    mask = np.isfinite(y_true) & np.isfinite(y_pred)
+    if not np.any(mask):
+        raise ValueError("No hay datos finitos en y_true/y_pred.")
+    yt = y_true[mask]
+    yp = y_pred[mask]
+    e  = yp - yt
+
+    # pesos
+    if t is not None:
+        t = np.asarray(t, dtype=float).ravel()
+        if t.shape != y_true.shape:
+            raise ValueError("t debe tener la misma forma que y_true/y_pred.")
+        t = t[mask]
+        dt = np.diff(t)
+        if np.any(dt <= 0):
+            raise ValueError("t debe ser estrictamente creciente.")
+        w = np.empty_like(t)
+        w[1:-1] = 0.5*(dt[:-1] + dt[1:])
+        w[0]  = 0.5*dt[0]
+        w[-1] = 0.5*dt[-1]
+        w = w / np.sum(w)
+    elif weights is not None:
+        w = np.asarray(weights, dtype=float).ravel()
+        if w.shape != y_true.shape:
+            raise ValueError("weights debe tener la misma forma que y_true/y_pred.")
+        w = w[mask]
+        if np.any(w < 0):
+            raise ValueError("weights no debe contener negativos.")
+        s = w.sum()
+        if s == 0:
+            raise ValueError("La suma de weights es cero.")
+        w = w / s
     else:
-        l2_norm = inf_norm = None
+        w = None
+
+    # helpers de promedio y “normas” ponderadas
+    def wmean(z):
+        return float(np.sum(w*z)) if w is not None else float(np.mean(z))
+
+    def wsum_abs(z):
+        return float(np.sum(np.abs(z)*w)*len(z)) if w is not None else float(np.sum(np.abs(z)))
+
+    def wsum_sq(z):
+        return float(np.sum((z*z)*w)*len(z)) if w is not None else float(np.sum(z*z))
+
+    # básicas
+    mae  = wmean(np.abs(e))
+    mse  = wmean(e*e)
+    rmse = np.sqrt(mse)
+
+    # normas del error
+    l1_norm   = wsum_abs(e)
+    l2_norm   = np.sqrt(wsum_sq(e))
+    linf_norm = float(np.max(np.abs(e)))
+
+    # relativo L2
+    denom_l2  = np.sqrt(wsum_sq(yt))
+    rel_l2    = l2_norm / (denom_l2 + tol)
+
+    # MAPE / sMAPE
+    mape_percent = None
+    smape_percent = None
+    if relative is not None:
+        rl = relative.lower()
+        if rl == "mape":
+            den = np.abs(yt) if baseline.lower() == "true" else np.abs(yp)
+            mape_percent = wmean(np.abs(e) / (den + tol)) * 100.0
+        elif rl == "smape":
+            smape_percent = wmean(2.0*np.abs(e) / (np.abs(yt) + np.abs(yp) + tol)) * 100.0
+        else:
+            raise ValueError("relative debe ser 'mape', 'smape' o None.")
+
+    # R^2
+    yt_mean = wmean(yt)
+    ss_res  = wsum_sq(yt - yp)
+    ss_tot  = wsum_sq(yt - yt_mean)
+    r2 = 1.0 - ss_res / (ss_tot + tol)
+
+    # NRMSE
+    nrmse_value = None
+    nrmse_key = None
+    if nrmse is not None:
+        key = nrmse.lower()
+        if key == "range":
+            span = float(np.max(yt) - np.min(yt))
+            nrmse_value = rmse / (span + tol)
+            nrmse_key = "NRMSE_range"
+        elif key == "mean":
+            mean_abs = float(np.mean(np.abs(yt)))
+            nrmse_value = rmse / (mean_abs + tol)
+            nrmse_key = "NRMSE_mean"
+        else:
+            raise ValueError("nrmse debe ser None, 'range' o 'mean'.")
+
+    # salida
+    metrics = {
+        "count_used": int(yt.size),
+        "MAE": mae,
+        "AbsErrorMean": mae,  # alias explícito
+        "MSE": mse,
+        "RMSE": rmse,
+        "L1_norm": l1_norm,
+        "L2_norm": l2_norm,
+        "Linf_norm": linf_norm,
+        "RelL2": rel_l2,
+        "R2": r2,
+    }
+    if mape_percent is not None:
+        metrics["MAPE_percent"] = mape_percent
+        metrics["RelErrorMean_percent"] = mape_percent  # alias de compatibilidad
+    if smape_percent is not None:
+        metrics["sMAPE_percent"] = smape_percent
+    if nrmse_value is not None:
+        metrics[nrmse_key] = nrmse_value
 
     if table:
-        headers = ["Metric", "Value"]
-        values = [
-            ["Absolute Global Error", abs_error_glob],
-            ["Relative Global Error (%)", rel_error_glob]
-        ]
-        if l2_norm is not None and inf_norm is not None:
-            values.extend([
-                ["L2 Norm", l2_norm],
-                ["Infinity Norm", inf_norm]
-            ])
-        
-        print(tabulate(values, headers, tablefmt="github"))
+        try:
+            from tabulate import tabulate
+            rows = []
+            for k, v in metrics.items():
+                if isinstance(v, float):
+                    rows.append([k, f"{v:.{digits}e}"])
+                else:
+                    rows.append([k, v])
+            print(tabulate(rows, headers=["Metric", "Value"], tablefmt="github"))
+        except Exception:
+            print("\n--- Error metrics ---")
+            for k, v in metrics.items():
+                if isinstance(v, float):
+                    print(f"{k:<22}: {v:.{digits}e}")
+                else:
+                    print(f"{k:<22}: {v}")
+            print("---------------------")
 
-    return (abs_error_glob, rel_error_glob, l2_norm, inf_norm) if l2_norm is not None else (abs_error_glob, rel_error_glob)
+    return metrics
 
 ########################################################################
 # Function for >1 peak
