@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 import scipy.optimize as opt
 from tabulate import tabulate
 import matplotlib.pyplot as plt
@@ -150,61 +151,106 @@ def BrownsteinTarr_number(r, rho, D, text=True):
     return kappa, kappa_regime
 
 ########################################################################
-import numpy as np
-
 def compute_error_metrics(
     y_true,
     y_pred,
     *,
     tol: float = 1e-12,
-    # tipo de error relativo puntual
+    # pointwise relative error type
     relative: str | None = "mape",   # "mape" | "smape" | None
-    baseline: str = "true",          # denominador en MAPE: "true" (|y_true|) o "pred" (|y_pred|)
-    # RMSE normalizado
+    baseline: str = "true",          # denominator in MAPE: "true" (|y_true|) or "pred" (|y_pred|)
+    # normalized RMSE
     nrmse: str | None = None,        # None | "range" | "mean"
-    # ponderación
-    weights = None,                  # array-like o None
-    t = None,                        # vector de tiempos (no uniforme) -> ponderación trapezoidal
-    # salida
-    table: bool = False,             # imprime tabla si se desea
-    digits: int = 6                  # decimales al imprimir
+    # weighting
+    weights = None,                  # array-like or None
+    t = None,                        # time vector (non-uniform) -> trapezoidal weighting
+    # output
+    table: bool = False,             # prints table if desired
+    digits: int = 6                  # decimals for printing
 ) -> dict:
-    """
-    Calcula métricas de error entre y_true y y_pred.
+    
+    """Calculates a comprehensive set of error metrics between two signals.
 
-    Devuelve un dict con:
-      - count_used
-      - MAE, MSE, RMSE, (AbsErrorMean alias de MAE)
-      - L1_norm, L2_norm, Linf_norm
-      - RelL2
-      - MAPE_percent (si relative="mape")
-      - RelErrorMean_percent (alias de MAPE_percent para compatibilidad)
-      - sMAPE_percent (si relative="smape")
-      - R2
-      - NRMSE_range / NRMSE_mean (si se solicita)
+    This function compares a 'predicted' signal (y_pred) to a 'true'
+    signal (y_true). It automatically handles non-finite (NaN, Inf) values
+    by filtering them out. It also supports optional weighting, either
+    from a non-uniform time vector 't' (using the trapezoidal rule)
+    or from a direct 'weights' array.
+
+    Args:
+        y_true (array-like): The ground truth or reference signal.
+        y_pred (array-like): The predicted or computed signal to compare.
+        tol (float, optional): A small tolerance value to prevent division by
+            zero in relative metrics. Defaults to 1e-12.
+        relative (str | None, optional): Specifies the type of pointwise
+            relative error to calculate: "mape" (Mean Absolute Percentage Error)
+            or "smape" (Symmetric Mean Absolute Percentage Error).
+            Defaults to "mape".
+        baseline (str, optional): If `relative="mape"`, determines the
+            denominator: "true" (uses `|y_true|`) or "pred" (uses `|y_pred|`).
+            Defaults to "true".
+        nrmse (str | None, optional): Specifies the normalization for the
+            Root Mean Squared Error: "range" (normalizes by `max(yt) - min(yt)`)
+            or "mean" (normalizes by `mean(abs(yt))`). Defaults to None.
+        weights (array-like | None, optional): An array of weights for each
+            data point. If provided, all metrics will be weighted.
+            Defaults to None.
+        t (array-like | None, optional): A vector of time points, potentially
+            non-uniform. If provided, weights are computed using the
+            trapezoidal rule (integration weights). This overrides `weights`.
+            Defaults to None.
+        table (bool, optional): If True, prints a formatted table of the
+            resulting metrics to the console. Defaults to False.
+        digits (int, optional): The number of decimal digits to use when
+            printing the table. Defaults to 6.
+
+    Raises:
+        ValueError: If inputs have mismatched shapes, if no finite data
+            is found, if 't' is not strictly increasing, if 'weights'
+            are invalid (negative, sum to zero), or if 'relative'
+            or 'nrmse' keys are unrecognized.
+
+    Returns:
+        dict: A dictionary where keys are metric names (str) and values
+        are the computed error values (float or int).
+
+        Key metrics include:
+        - count_used (int): Number of finite data points used.
+        - MAE (float): Mean Absolute Error.
+        - MSE (float): Mean Squared Error.
+        - RMSE (float): Root Mean Squared Error.
+        - L1_norm (float): L1 norm of the error (sum of absolute errors).
+        - L2_norm (float): L2 norm of the error (sqrt of sum of squared errors).
+        - Linf_norm (float): L-infinity norm (maximum absolute error).
+        - RelL2 (float): L2 norm of the error normalized by the L2 norm of y_true.
+        - R2 (float): R-squared (Coefficient of Determination).
+        - MAPE_percent (float): Mean Absolute Percentage Error (if requested).
+        - sMAPE_percent (float): Symmetric MAPE (if requested).
+        - NRMSE_range/NRMSE_mean (float): Normalized RMSE (if requested).
     """
+    
     y_true = np.asarray(y_true, dtype=float).ravel()
     y_pred = np.asarray(y_pred, dtype=float).ravel()
     if y_true.shape != y_pred.shape:
-        raise ValueError("Las señales de entrada deben tener la misma forma.")
+        raise ValueError("Input signals must have the same shape.")
 
-    # filtra no finitos
+    # filter non-finite values
     mask = np.isfinite(y_true) & np.isfinite(y_pred)
     if not np.any(mask):
-        raise ValueError("No hay datos finitos en y_true/y_pred.")
+        raise ValueError("No finite data in y_true/y_pred.")
     yt = y_true[mask]
     yp = y_pred[mask]
     e  = yp - yt
 
-    # pesos
+    # weights
     if t is not None:
         t = np.asarray(t, dtype=float).ravel()
         if t.shape != y_true.shape:
-            raise ValueError("t debe tener la misma forma que y_true/y_pred.")
+            raise ValueError("t must have the same shape as y_true/y_pred.")
         t = t[mask]
         dt = np.diff(t)
         if np.any(dt <= 0):
-            raise ValueError("t debe ser estrictamente creciente.")
+            raise ValueError("t must be strictly increasing.")
         w = np.empty_like(t)
         w[1:-1] = 0.5*(dt[:-1] + dt[1:])
         w[0]  = 0.5*dt[0]
@@ -213,18 +259,18 @@ def compute_error_metrics(
     elif weights is not None:
         w = np.asarray(weights, dtype=float).ravel()
         if w.shape != y_true.shape:
-            raise ValueError("weights debe tener la misma forma que y_true/y_pred.")
+            raise ValueError("weights must have the same shape as y_true/y_pred.")
         w = w[mask]
         if np.any(w < 0):
-            raise ValueError("weights no debe contener negativos.")
+            raise ValueError("weights must not contain negative values.")
         s = w.sum()
         if s == 0:
-            raise ValueError("La suma de weights es cero.")
+            raise ValueError("Sum of weights is zero.")
         w = w / s
     else:
         w = None
 
-    # helpers de promedio y “normas” ponderadas
+    # weighted average and "norm" helpers
     def wmean(z):
         return float(np.sum(w*z)) if w is not None else float(np.mean(z))
 
@@ -234,17 +280,17 @@ def compute_error_metrics(
     def wsum_sq(z):
         return float(np.sum((z*z)*w)*len(z)) if w is not None else float(np.sum(z*z))
 
-    # básicas
+    # basic metrics
     mae  = wmean(np.abs(e))
     mse  = wmean(e*e)
     rmse = np.sqrt(mse)
 
-    # normas del error
+    # error norms
     l1_norm   = wsum_abs(e)
     l2_norm   = np.sqrt(wsum_sq(e))
     linf_norm = float(np.max(np.abs(e)))
 
-    # relativo L2
+    # L2 relative error
     denom_l2  = np.sqrt(wsum_sq(yt))
     rel_l2    = l2_norm / (denom_l2 + tol)
 
@@ -259,7 +305,7 @@ def compute_error_metrics(
         elif rl == "smape":
             smape_percent = wmean(2.0*np.abs(e) / (np.abs(yt) + np.abs(yp) + tol)) * 100.0
         else:
-            raise ValueError("relative debe ser 'mape', 'smape' o None.")
+            raise ValueError("relative must be 'mape', 'smape', or None.")
 
     # R^2
     yt_mean = wmean(yt)
@@ -281,13 +327,13 @@ def compute_error_metrics(
             nrmse_value = rmse / (mean_abs + tol)
             nrmse_key = "NRMSE_mean"
         else:
-            raise ValueError("nrmse debe ser None, 'range' o 'mean'.")
+            raise ValueError("nrmse must be None, 'range', or 'mean'.")
 
-    # salida
+    # output
     metrics = {
         "count_used": int(yt.size),
         "MAE": mae,
-        "AbsErrorMean": mae,  # alias explícito
+        "AbsErrorMean": mae,  # explicit alias
         "MSE": mse,
         "RMSE": rmse,
         "L1_norm": l1_norm,
@@ -298,7 +344,7 @@ def compute_error_metrics(
     }
     if mape_percent is not None:
         metrics["MAPE_percent"] = mape_percent
-        metrics["RelErrorMean_percent"] = mape_percent  # alias de compatibilidad
+        metrics["RelErrorMean_percent"] = mape_percent  # compatibility alias
     if smape_percent is not None:
         metrics["sMAPE_percent"] = smape_percent
     if nrmse_value is not None:
@@ -494,3 +540,55 @@ def plot_triple_graphs(xdata1=None, ydata1=None, label1='data1', title1='figure1
     if savefig:
         plt.savefig(savefig)
     plt.show()
+
+######################################################################
+def profile_to_csv(
+    profiles_dict,
+    r_grid,
+    output_filename='spatial_profiles.csv'
+):
+    """
+    Saves the calculated spatial magnetization profiles to a CSV file.
+
+    This function takes the dictionary of profiles and the radial grid array,
+    assembles them into a pandas DataFrame, and exports them to a CSV file.
+    The time-based columns are formatted to include ' s' (seconds) for clarity.
+
+    Parameters
+    ----------
+    profiles_dict : dict
+        A dictionary where keys are the time points (float) and
+        values are the corresponding 1D magnetization profile arrays (np.ndarray).
+    r_grid : np.ndarray
+        A 1D array containing the radial coordinates (the r-axis).
+    output_filename : str, optional
+        The desired name for the output CSV file.
+        Defaults to 'spatial_profiles.csv'.
+
+    Returns
+    -------
+    None
+        This function does not return a value; its side effect is
+        saving a file to disk.
+    """
+    
+    print(f"\nAssembling data to save to {output_filename}...")
+
+    # 1. Create a pandas DataFrame from the profiles dictionary.
+    df = pd.DataFrame(profiles_dict)
+
+    # 2. Rename columns to add " s" for clarity.
+    column_rename_map = {t: f"{t} s" for t in df.columns}
+    df = df.rename(columns=column_rename_map)
+
+    # 3. Insert the radial grid as the first column (index 0)
+    df.insert(0, 'r_grid', r_grid)
+
+    # 4. Save the DataFrame to the specified CSV file.
+    df.to_csv(output_filename, index=False)
+
+    print(f"Success! Results have been saved to: {output_filename}")
+    print("The CSV file contains the following columns:")
+    print(list(df.columns))
+
+##################################################################

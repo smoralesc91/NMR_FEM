@@ -3,14 +3,13 @@ import numpy as np
 import mpmath
 import scipy.optimize as opt
 
+__version__ = "1.7-spatial-profile"
+
 try:
     # Optional: user-provided equilibrium magnetization function
     from Functions_NMR import mag_sat
 except Exception:
     mag_sat = None
-
-__version__ = "1.6-clean-args"
-
 
 def _g_eps(eps: float, kappa: float) -> float:
     """
@@ -182,13 +181,119 @@ def NMR_SemiA_sphere(
         return t, mag_amounts, eps, Tn, An, mag_assemble
     elif return_data == 'time-mag':
         return t, mag_amounts
-    elif return_data == 'mag_amounts':
-        return mag_amounts
     elif return_data == 'mag_assemble':
         return mag_assemble
+    elif return_data == 'mag_amounts':
+        return mag_amounts
     else:
-        # Fallback to the richest option
-        return t, mag_amounts, eps, Tn, An, mag_assemble
+        raise ValueError("Invalid `return_data` option.")
+
+
+def calculate_spatial_profile(
+    eps,
+    Tn,
+    R,
+    t0,
+    n_points_r,
+    t_vis_list,
+    B_0 = 0.05,
+    Temp = 303.15,
+    fluid = 'water'
+):
+    """
+    Calculates the spatially-resolved magnetization profile M(r, t) at specific times.
+
+    This function assembles the full spatial solution from the pre-computed
+    eigenmodes (eps, Tn) based on the Brownstein-Tarr model for a sphere.
+    
+    The equilibrium magnetization (M0) is calculated internally by attempting
+    to import and call `mag_sat` from `Functions_NMR.py`. If this fails,
+    M0 defaults to 1.0.
+
+    The solution is given by:
+        M(r, t) = M0 * Σ_n C_n * j0(ε_n * r / R) * exp(-(t - t0) / Tn)
+
+    Parameters
+    ----------
+    eps : np.ndarray
+        1D array of eigenvalues (ε_n) from the eigenvalue problem.
+    Tn : np.ndarray
+        1D array of corresponding modal relaxation times (T_n).
+    R : float
+        The radius of the sphere [m].
+    t0 : float
+        The initial time of the evolution (t_start) [s].
+    n_points_r : int
+        Number of points for the radial grid (from r=0 to r=R).
+    t_vis_list : list or np.ndarray
+        A list of specific time points [s] at which to compute the profile.
+    B_0 : float, optional
+        Magnetic field strength [T]. Used only by `mag_sat`.
+    Temp : float, optional
+        Temperature [K]. Used only by `mag_sat`.
+    fluid : str, optional
+        Fluid identifier string. Used only by `mag_sat`.
+
+    Returns
+    -------
+    tuple : (r_grid, profiles_dict)
+        r_grid : np.ndarray
+            1D array of radial coordinates [m], from 0 to R.
+        profiles_dict : dict
+            A dictionary where keys are the times from `t_vis_list` and
+            values are the corresponding 1D np.ndarray (size `n_points_r`)
+            of the magnetization profile M(r) at that time.
+    """
+    
+    # --- Equilibrium magnetization M0 (absolute scaling, optional)
+    try:
+        M0 = float(mag_sat(B_0, Temp, fluid)) if callable(mag_sat) else 1.0
+    except Exception:
+        M0 = 1.0
+
+    print(f"Calculating spatial profile M(r, t) using {len(eps)} modes (M0={M0:.2e}).")
+
+    # --- Calculate Spatial Amplitude Coefficients (C_n) ---
+    # C_n = 2 * (sin(ε_n) - ε_n*cos(ε_n)) / (ε_n - sin(ε_n)*cos(ε_n))
+    sin_eps = np.sin(eps)
+    cos_eps = np.cos(eps)
+    Cn_denom = eps - sin_eps * cos_eps
+    Cn_num = 2.0 * (sin_eps - eps * cos_eps)
+
+    # Initialize C_n and handle potential (though unlikely) division by zero
+    Cn = np.zeros_like(Cn_denom)
+    valid_idx = Cn_denom != 0.0
+    Cn[valid_idx] = Cn_num[valid_idx] / Cn_denom[valid_idx]
+
+    # --- Define Local Helper Function for Spherical Bessel j_0 ---
+    def j0(x):
+        """Zeroth-order spherical Bessel function, j_0(x) = sin(x)/x."""
+        x = np.asarray(x)
+        # Use np.where to handle the singularity at x=0 (limit is 1.0)
+        return np.where(x == 0.0, 1.0, np.sin(x) / x)
+
+    # --- Define Spatial (Radial) Grid ---
+    r_grid = np.linspace(0.0, R, int(n_points_r))
+
+    # --- Assemble and Store Profiles ---
+    # Pre-compute the Bessel function matrix (time-independent)
+    j0_args = np.outer(eps / R, r_grid)
+    j0_matrix = j0(j0_args)  # Shape: (n_terms, n_points_r)
+    
+    profiles_dict = {}
+    
+    for t_fixed in t_vis_list:
+        # Calculate time-dependent part (n_terms,)
+        mode_amplitudes_at_t = Cn * np.exp(-(t_fixed - t0) / Tn)
+        
+        # Sum over modes (n) using matrix-vector product
+        # M0 is now the locally computed equilibrium magnetization
+        M_field_r = M0 * (j0_matrix.T @ mode_amplitudes_at_t)
+        
+        # Store the computed profile
+        profiles_dict[t_fixed] = M_field_r
+            
+    return r_grid, profiles_dict
 
 
 # Expose version for easy tracking

@@ -1,7 +1,7 @@
 from dolfin import *
 import numpy as np
 
-__version__ = "1.4-legacy"
+__version__ = "1.5-spatial-profile"
 
 # Optional user utilities
 try:
@@ -294,6 +294,49 @@ def FEM_NMR(
     else:
         raise ValueError("Invalid `return_data` option.")
 
+
+
+def profile_1d_dof(f):
+    """
+    Extracts and sorts 1D profile data from a dolfin.Function.
+
+    This utility function retrieves the spatial coordinates and corresponding
+    solution values from a FEniCS Function defined on a 1D (Interval) mesh.
+    It accesses the coordinates of the degrees of freedom (DoFs) via
+    `tabulate_dof_coordinates()` and the solution values via `vector().get_local()`.
+
+    A critical step is sorting: the internal FEniCS ordering of DoFs
+    (and thus the vectors) is not guaranteed to be spatially monotonic
+    (e.g., from 0 to R). This function performs a sort operation based on the
+    spatial coordinates (x) to ensure that the returned arrays are correctly
+    ordered for plotting or spatial analysis.
+
+    Parameters
+    ----------
+    f : dolfin.Function
+        The 1D FEniCS function object (e.g., m_now, m_prev) from which
+        to extract the profile data.
+
+    Returns
+    -------
+    coords_sorted : numpy.ndarray
+        A 1D array of the spatial coordinates (DoFs) sorted in
+        ascending order.
+    values_sorted : numpy.ndarray
+        A 1D array of the corresponding function values, reordered
+        to match `coords_sorted`.
+    """
+    V = f.function_space()
+    # Get DoF coordinates (may be unsorted)
+    x = V.tabulate_dof_coordinates().reshape((-1, 1))[:,0]
+    # Get DoF values (in the same unsorted order as x)
+    m = f.vector().get_local()
+    
+    # Get the indices that would sort the coordinate array
+    idx = np.argsort(x)
+    
+    # Return both arrays, sorted by coordinate
+    return x[idx], m[idx]
 
 # Backward-compatibility alias
 NMR_FEM = FEM_NMR
