@@ -151,225 +151,350 @@ def BrownsteinTarr_number(r, rho, D, text=True):
     return kappa, kappa_regime
 
 ########################################################################
+
+from typing import Union, Dict, Optional
+
 def compute_error_metrics(
-    y_true,
-    y_pred,
+    y_true: Union[np.ndarray, list],
+    y_pred: Union[np.ndarray, list],
     *,
+    t: Optional[Union[np.ndarray, list]] = None,
     tol: float = 1e-12,
-    # pointwise relative error type
-    relative: str | None = "mape",   # "mape" | "smape" | None
-    baseline: str = "true",          # denominator in MAPE: "true" (|y_true|) or "pred" (|y_pred|)
-    # normalized RMSE
-    nrmse: str | None = None,        # None | "range" | "mean"
-    # weighting
-    weights = None,                  # array-like or None
-    t = None,                        # time vector (non-uniform) -> trapezoidal weighting
-    # output
-    table: bool = False,             # prints table if desired
-    digits: int = 6                  # decimals for printing
-) -> dict:
+    table: bool = False,
+    digits: int = 6
+) -> Dict[str, Union[int, float]]:
+    """
+    Computes comprehensive error metrics for physical signal analysis with optional
+    time-domain weighting for continuous signals.
     
-    """Calculates a comprehensive set of error metrics between two signals.
-
-    This function compares a 'predicted' signal (y_pred) to a 'true'
-    signal (y_true). It automatically handles non-finite (NaN, Inf) values
-    by filtering them out. It also supports optional weighting, either
-    from a non-uniform time vector 't' (using the trapezoidal rule)
-    or from a direct 'weights' array.
-
-    Args:
-        y_true (array-like): The ground truth or reference signal.
-        y_pred (array-like): The predicted or computed signal to compare.
-        tol (float, optional): A small tolerance value to prevent division by
-            zero in relative metrics. Defaults to 1e-12.
-        relative (str | None, optional): Specifies the type of pointwise
-            relative error to calculate: "mape" (Mean Absolute Percentage Error)
-            or "smape" (Symmetric Mean Absolute Percentage Error).
-            Defaults to "mape".
-        baseline (str, optional): If `relative="mape"`, determines the
-            denominator: "true" (uses `|y_true|`) or "pred" (uses `|y_pred|`).
-            Defaults to "true".
-        nrmse (str | None, optional): Specifies the normalization for the
-            Root Mean Squared Error: "range" (normalizes by `max(yt) - min(yt)`)
-            or "mean" (normalizes by `mean(abs(yt))`). Defaults to None.
-        weights (array-like | None, optional): An array of weights for each
-            data point. If provided, all metrics will be weighted.
-            Defaults to None.
-        t (array-like | None, optional): A vector of time points, potentially
-            non-uniform. If provided, weights are computed using the
-            trapezoidal rule (integration weights). This overrides `weights`.
-            Defaults to None.
-        table (bool, optional): If True, prints a formatted table of the
-            resulting metrics to the console. Defaults to False.
-        digits (int, optional): The number of decimal digits to use when
-            printing the table. Defaults to 6.
-
-    Raises:
-        ValueError: If inputs have mismatched shapes, if no finite data
-            is found, if 't' is not strictly increasing, if 'weights'
-            are invalid (negative, sum to zero), or if 'relative'
-            or 'nrmse' keys are unrecognized.
-
-    Returns:
-        dict: A dictionary where keys are metric names (str) and values
-        are the computed error values (float or int).
-
-        Key metrics include:
-        - count_used (int): Number of finite data points used.
-        - MAE (float): Mean Absolute Error.
-        - MSE (float): Mean Squared Error.
-        - RMSE (float): Root Mean Squared Error.
-        - L1_norm (float): L1 norm of the error (sum of absolute errors).
-        - L2_norm (float): L2 norm of the error (sqrt of sum of squared errors).
-        - Linf_norm (float): L-infinity norm (maximum absolute error).
-        - RelL2 (float): L2 norm of the error normalized by the L2 norm of y_true.
-        - R2 (float): R-squared (Coefficient of Determination).
-        - MAPE_percent (float): Mean Absolute Percentage Error (if requested).
-        - sMAPE_percent (float): Symmetric MAPE (if requested).
-        - NRMSE_range/NRMSE_mean (float): Normalized RMSE (if requested).
+    This function calculates absolute and relative error metrics suitable for comparing
+    continuous signals, particularly in applications like NMR spectroscopy, where 
+    signals may be sampled at non-uniform time intervals. The metrics include 
+    functional norms (L1, L2, L∞) and statistical measures (MAE, RMSE, R²).
+    
+    Parameters
+    ----------
+    y_true : array-like
+        Ground truth signal values. Can be 1D or 2D array (will be flattened).
+        Must contain finite numerical values.
+    y_pred : array-like
+        Predicted or reconstructed signal values. Must have same shape as y_true.
+    t : array-like, optional
+        Time vector corresponding to signal samples. Required for weighted metrics 
+        with non-uniform sampling. When provided, metrics are computed using 
+        trapezoidal integration weights. Must be strictly increasing. 
+        If None, uniform sampling is assumed.
+    tol : float, default=1e-12
+        Numerical tolerance to prevent division by zero in relative error calculations.
+    table : bool, default=False
+        If True, prints a formatted table summarizing all computed metrics.
+    digits : int, default=6
+        Number of decimal digits displayed in the output table (when table=True).
+    
+    Returns
+    -------
+    dict
+        Dictionary containing the following error metrics:
+        
+        **Basic Information**
+        count : int
+            Number of valid (finite) data points used for calculations.
+        
+        **Absolute Error Metrics**
+        MAE : float
+            Mean Absolute Error - average of absolute errors (weighted if t provided).
+        RMSE : float
+            Root Mean Square Error - square root of average squared errors.
+        L1_norm : float
+            L1 norm of the error - integral of absolute error over domain.
+        L2_norm : float
+            L2 norm of the error - square root of integral of squared error.
+        Linf_norm : float
+            L∞ norm (maximum norm) - maximum absolute error across all points.
+        
+        **Relative Error Metrics**
+        Global_Rel_Error_Pct : float
+            Global relative error percentage based on L1 norm:
+            ||error||₁ / ||true_signal||₁ × 100%
+        Rel_L2 : float
+            Relative L2 error (dimensionless):
+            ||error||₂ / ||true_signal||₂
+        
+        **Statistical Measure**
+        R2 : float
+            Coefficient of determination (R² score) - proportion of variance explained.
+            Range: (-∞, 1], where 1 indicates perfect prediction.
+    
+    Notes
+    -----
+    1. **Weighting Logic**:
+       - When `t` is provided, metrics use trapezoidal integration weights for 
+         proper treatment of non-uniform sampling.
+       - Integration weights (`w_int`) are used for computing norms (L1, L2).
+       - Statistical weights (`w_stat = w_int / sum(w_int)`) are used for averages.
+       - For uniform sampling (t=None), all points receive equal weight.
+    
+    2. **Error Norm Definitions**:
+       - L1 norm: ∫|error(t)| dt (approximated by trapezoidal rule)
+       - L2 norm: √[∫error(t)² dt] (approximated by trapezoidal rule)
+       - L∞ norm: max(|error(t)|) (no weighting applied)
+    
+    3. **Relative Error Calculations**:
+       - Global_Rel_Error_Pct: Compares integrated absolute error to integrated 
+         absolute signal magnitude.
+       - Rel_L2: Compares integrated squared error to integrated squared signal 
+         magnitude.
+    
+    4. **R² Calculation**:
+       - Uses weighted mean and sums when time weights are provided.
+       - Standard unweighted formula for uniform sampling.
+       - Formula: R² = 1 - SS_res / SS_tot, where SS_res is residual sum of squares
+         and SS_tot is total sum of squares about the (weighted) mean.
+    
+    5. **Robustness Features**:
+       - Automatically filters out non-finite values (NaN, inf).
+       - Adds tolerance (`tol`) to denominators to avoid division by zero.
+       - Handles edge cases with single or few data points.
+       - Validates time vector monotonicity.
+    
+    Examples
+    --------
+    >>> # Basic usage with uniform sampling
+    >>> y_true = [1.0, 2.0, 3.0, 4.0]
+    >>> y_pred = [1.1, 1.9, 3.2, 3.8]
+    >>> metrics = compute_error_metrics(y_true, y_pred)
+    >>> print(f"MAE: {metrics['MAE']:.3f}, R²: {metrics['R2']:.3f}")
+    
+    >>> # With non-uniform time sampling
+    >>> t = [0, 1, 3, 6]  # Non-uniform intervals
+    >>> metrics = compute_error_metrics(y_true, y_pred, t=t)
+    >>> print(f"L2 norm: {metrics['L2_norm']:.3f}")
+    
+    >>> # With table display
+    >>> metrics = compute_error_metrics(y_true, y_pred, t=t, table=True)
+    
+    Raises
+    ------
+    ValueError
+        - If y_true and y_pred have different shapes.
+        - If no finite data is available after filtering.
+        - If t is provided and contains non-increasing values.
+        - If t length doesn't match number of valid data points.
+    
+    See Also
+    --------
+    numpy.trapz : Trapezoidal integration method.
+    sklearn.metrics.mean_absolute_error : Similar MAE calculation.
+    sklearn.metrics.r2_score : Similar R² calculation.
     """
     
+    # ============================================================================
+    # DATA VALIDATION AND PREPROCESSING
+    # ============================================================================
+    
+    # Convert inputs to 1D float arrays and flatten to ensure consistent processing
     y_true = np.asarray(y_true, dtype=float).ravel()
     y_pred = np.asarray(y_pred, dtype=float).ravel()
+    
+    # Validate array dimensions match
     if y_true.shape != y_pred.shape:
-        raise ValueError("Input signals must have the same shape.")
-
-    # filter non-finite values
+        raise ValueError(f"Shape mismatch: y_true {y_true.shape} != y_pred {y_pred.shape}")
+    
+    # Create mask to exclude non-finite values (NaN, inf) from both arrays
     mask = np.isfinite(y_true) & np.isfinite(y_pred)
+    
+    # Check if any valid data remains
     if not np.any(mask):
-        raise ValueError("No finite data in y_true/y_pred.")
+        raise ValueError("No finite data points available for error computation.")
+    
+    # Apply mask to obtain clean datasets for analysis
     yt = y_true[mask]
     yp = y_pred[mask]
-    e  = yp - yt
-
-    # weights
+    
+    # Compute error vector: prediction - ground truth
+    e = yp - yt
+    N = len(yt)
+    
+    # ============================================================================
+    # WEIGHT CALCULATION FOR NON-UNIFORM SAMPLING
+    # ============================================================================
+    
     if t is not None:
-        t = np.asarray(t, dtype=float).ravel()
-        if t.shape != y_true.shape:
-            raise ValueError("t must have the same shape as y_true/y_pred.")
-        t = t[mask]
-        dt = np.diff(t)
-        if np.any(dt <= 0):
-            raise ValueError("t must be strictly increasing.")
-        w = np.empty_like(t)
-        w[1:-1] = 0.5*(dt[:-1] + dt[1:])
-        w[0]  = 0.5*dt[0]
-        w[-1] = 0.5*dt[-1]
-        w = w / np.sum(w)
-    elif weights is not None:
-        w = np.asarray(weights, dtype=float).ravel()
-        if w.shape != y_true.shape:
-            raise ValueError("weights must have the same shape as y_true/y_pred.")
-        w = w[mask]
-        if np.any(w < 0):
-            raise ValueError("weights must not contain negative values.")
-        s = w.sum()
-        if s == 0:
-            raise ValueError("Sum of weights is zero.")
-        w = w / s
+        # Extract and mask time values corresponding to valid data points
+        t = np.asarray(t, dtype=float).ravel()[mask]
+        
+        # Validate time vector length matches data
+        if len(t) != N:
+            raise ValueError(
+                f"Time vector length ({len(t)}) must match number of valid "
+                f"data points ({N})."
+            )
+        
+        # Check for strictly increasing time values
+        diffs = np.diff(t)
+        if np.any(diffs <= 0):
+            raise ValueError("Time vector t must contain strictly increasing values.")
+        
+        # Initialize integration weights array
+        dt = np.zeros(N)
+        
+        # Handle edge cases based on number of points
+        if N == 1:
+            # Single point: unit weight for integration
+            dt[0] = 1.0
+        elif N == 2:
+            # Two points: trapezoidal rule simplifies to equal halves
+            dt[0] = 0.5 * diffs[0]
+            dt[1] = 0.5 * diffs[0]
+        else:
+            # Three or more points: full trapezoidal integration weights
+            # Interior points: average of adjacent intervals
+            dt[1:-1] = 0.5 * (diffs[:-1] + diffs[1:])
+            # Boundary points: half of first/last interval
+            dt[0] = 0.5 * diffs[0]
+            dt[-1] = 0.5 * diffs[-1]
+        
+        # Integration weights represent the dt for trapezoidal integration
+        integration_weights = dt
+        
+        # Total domain span for normalization
+        domain_span = np.sum(integration_weights)
+        
+        # Statistical weights for computing averages (normalized to sum to 1)
+        stat_weights = integration_weights / domain_span
     else:
-        w = None
-
-    # weighted average and "norm" helpers
-    def wmean(z):
-        return float(np.sum(w*z)) if w is not None else float(np.mean(z))
-
-    def wsum_abs(z):
-        return float(np.sum(np.abs(z)*w)*len(z)) if w is not None else float(np.sum(np.abs(z)))
-
-    def wsum_sq(z):
-        return float(np.sum((z*z)*w)*len(z)) if w is not None else float(np.sum(z*z))
-
-    # basic metrics
-    mae  = wmean(np.abs(e))
-    mse  = wmean(e*e)
-    rmse = np.sqrt(mse)
-
-    # error norms
-    l1_norm   = wsum_abs(e)
-    l2_norm   = np.sqrt(wsum_sq(e))
+        # Uniform sampling case: equal weights for all points
+        integration_weights = np.ones(N)
+        stat_weights = np.ones(N) / N
+    
+    # ============================================================================
+    # ABSOLUTE ERROR METRICS (FUNCTIONAL NORMS)
+    # ============================================================================
+    
+    # L1 norm: ∫|error(t)| dt (trapezoidal approximation)
+    # Represents the total absolute error integrated over the domain
+    l1_norm = np.sum(np.abs(e) * integration_weights)
+    
+    # L2 norm squared: ∫error(t)² dt
+    l2_sq = np.sum((e**2) * integration_weights)
+    
+    # L2 norm: √[∫error(t)² dt]
+    # Represents the Euclidean distance between signals
+    l2_norm = np.sqrt(l2_sq)
+    
+    # L∞ norm (maximum norm): max|error(t)|
+    # Identifies the worst-case error point
     linf_norm = float(np.max(np.abs(e)))
-
-    # L2 relative error
-    denom_l2  = np.sqrt(wsum_sq(yt))
-    rel_l2    = l2_norm / (denom_l2 + tol)
-
-    # MAPE / sMAPE
-    mape_percent = None
-    smape_percent = None
-    if relative is not None:
-        rl = relative.lower()
-        if rl == "mape":
-            den = np.abs(yt) if baseline.lower() == "true" else np.abs(yp)
-            mape_percent = wmean(np.abs(e) / (den + tol)) * 100.0
-        elif rl == "smape":
-            smape_percent = wmean(2.0*np.abs(e) / (np.abs(yt) + np.abs(yp) + tol)) * 100.0
-        else:
-            raise ValueError("relative must be 'mape', 'smape', or None.")
-
-    # R^2
-    yt_mean = wmean(yt)
-    ss_res  = wsum_sq(yt - yp)
-    ss_tot  = wsum_sq(yt - yt_mean)
+    
+    # ============================================================================
+    # RELATIVE ERROR METRICS
+    # ============================================================================
+    
+    # Denominator for L1-based relative error: ∫|true_signal(t)| dt
+    den_l1 = np.sum(np.abs(yt) * integration_weights)
+    
+    # Global relative error (L1-based): ||error||₁ / ||true_signal||₁ × 100%
+    # Provides percentage error relative to total signal magnitude
+    rel_l1_percent = (l1_norm / (den_l1 + tol)) * 100.0
+    
+    # Denominator for L2-based relative error: √[∫true_signal(t)² dt]
+    den_l2 = np.sqrt(np.sum((yt**2) * integration_weights))
+    
+    # Relative L2 error: ||error||₂ / ||true_signal||₂
+    # Dimensionless measure of error relative to signal energy
+    rel_l2 = l2_norm / (den_l2 + tol)
+    
+    # ============================================================================
+    # STATISTICAL ERROR METRICS
+    # ============================================================================
+    
+    # Mean Absolute Error (MAE): ∫|error(t)| w_stat dt
+    # Weighted average of absolute errors
+    mae = np.sum(np.abs(e) * stat_weights)
+    
+    # Mean Squared Error (MSE): ∫error(t)² w_stat dt
+    mse = np.sum((e**2) * stat_weights)
+    
+    # Root Mean Square Error (RMSE): √MSE
+    # Standard deviation of prediction errors
+    rmse = np.sqrt(mse)
+    
+    # ============================================================================
+    # COEFFICIENT OF DETERMINATION (R² SCORE)
+    # ============================================================================
+    
+    # Weighted mean of ground truth signal
+    yt_mean = np.sum(yt * stat_weights)
+    
+    # Residual sum of squares (weighted)
+    ss_res = np.sum((yt - yp)**2 * stat_weights)
+    
+    # Total sum of squares (weighted)
+    ss_tot = np.sum((yt - yt_mean)**2 * stat_weights)
+    
+    # R² = 1 - SS_res / SS_tot (with tolerance to avoid division by zero)
     r2 = 1.0 - ss_res / (ss_tot + tol)
-
-    # NRMSE
-    nrmse_value = None
-    nrmse_key = None
-    if nrmse is not None:
-        key = nrmse.lower()
-        if key == "range":
-            span = float(np.max(yt) - np.min(yt))
-            nrmse_value = rmse / (span + tol)
-            nrmse_key = "NRMSE_range"
-        elif key == "mean":
-            mean_abs = float(np.mean(np.abs(yt)))
-            nrmse_value = rmse / (mean_abs + tol)
-            nrmse_key = "NRMSE_mean"
-        else:
-            raise ValueError("nrmse must be None, 'range', or 'mean'.")
-
-    # output
+    
+    # ============================================================================
+    # RESULTS COMPILATION
+    # ============================================================================
+    
     metrics = {
-        "count_used": int(yt.size),
+        # Basic information
+        "count": int(N),
+        
+        # Statistical measure
+        "R2": r2,
+        
+        # Absolute error metrics
         "MAE": mae,
-        "AbsErrorMean": mae,  # explicit alias
-        "MSE": mse,
         "RMSE": rmse,
         "L1_norm": l1_norm,
         "L2_norm": l2_norm,
         "Linf_norm": linf_norm,
-        "RelL2": rel_l2,
-        "R2": r2,
+        
+        # Relative error metrics
+        "Rel_L2": rel_l2,
+        "Global_Rel_Error_Pct": rel_l1_percent,
     }
-    if mape_percent is not None:
-        metrics["MAPE_percent"] = mape_percent
-        metrics["RelErrorMean_percent"] = mape_percent  # compatibility alias
-    if smape_percent is not None:
-        metrics["sMAPE_percent"] = smape_percent
-    if nrmse_value is not None:
-        metrics[nrmse_key] = nrmse_value
-
+    
+    # ============================================================================
+    # OPTIONAL TABLE DISPLAY
+    # ============================================================================
+    
     if table:
-        try:
-            from tabulate import tabulate
-            rows = []
-            for k, v in metrics.items():
-                if isinstance(v, float):
-                    rows.append([k, f"{v:.{digits}e}"])
-                else:
-                    rows.append([k, v])
-            print(tabulate(rows, headers=["Metric", "Value"], tablefmt="github"))
-        except Exception:
-            print("\n--- Error metrics ---")
-            for k, v in metrics.items():
-                if isinstance(v, float):
-                    print(f"{k:<22}: {v:.{digits}e}")
-                else:
-                    print(f"{k:<22}: {v}")
-            print("---------------------")
-
+        print("\n" + "=" * 60)
+        print("ERROR METRICS SUMMARY")
+        print("=" * 60)
+        print(f"{'Metric':<30} {'Value':>20}")
+        print("-" * 60)
+        
+        # Display formatting based on metric type
+        for key, value in metrics.items():
+            if key == "count":
+                # Integer formatting for count
+                print(f"{key:<30} {int(value):>20}")
+            elif key == "R2":
+                # R² typically shown with 4-6 decimal places
+                print(f"{key:<30} {value:>20.6f}")
+            elif "Pct" in key:
+                # Percentage formatting for relative errors
+                print(f"{key:<30} {value:>20.4f} %")
+            elif "norm" in key or key in ["MAE", "RMSE"]:
+                # Scientific notation for norms and absolute errors
+                print(f"{key:<30} {value:>20.6e}")
+            else:
+                # Default formatting for other metrics
+                print(f"{key:<30} {value:>20.6f}")
+        
+        print("=" * 60)
+        print(f"Total points analyzed: {N}")
+        if t is not None:
+            domain_length = t[-1] - t[0] if len(t) > 1 else 0
+            print(f"Time domain span: {domain_length:.4f}")
+    
     return metrics
+
 
 ########################################################################
 # Function for >1 peak
