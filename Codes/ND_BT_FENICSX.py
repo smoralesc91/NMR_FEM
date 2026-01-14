@@ -1,5 +1,5 @@
 # ==============================================================================
-# 1. ENVIRONMENT SETUP (Google Colab Support)
+# 1. ENVIRONMENT SETUP
 # ==============================================================================
 import dolfinx
 import numpy as np
