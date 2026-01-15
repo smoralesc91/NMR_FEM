@@ -1,3 +1,15 @@
+# ==============================================================================
+# 1. ENVIRONMENT SETUP
+# ==============================================================================
+import dolfinx
+import numpy as np
+import ufl
+import time
+from dolfinx import mesh, fem, io
+from dolfinx.fem.petsc import LinearProblem
+from mpi4py import MPI
+from petsc4py import PETSc
+
 def BT_fenicsx_decay_profile(R_phys=100.0e-6,
                rho_phys=40.0e-6,
                D_phys=2.30e-9,
