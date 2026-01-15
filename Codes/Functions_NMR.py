@@ -7,9 +7,9 @@ from scipy.signal import find_peaks
 from sklearn.metrics import r2_score
 from scipy.optimize import fsolve
 import openturns as ot
-from fenics import *
+#from fenics import *
 
-__version__ = "1.0"
+__version__ = "1.0 no fenics"
 
 def NMR_Functions(__version__):
     pass
