@@ -9,6 +9,7 @@ from dolfinx import mesh, fem, io
 from dolfinx.fem.petsc import LinearProblem
 from mpi4py import MPI
 from petsc4py import PETSc
+import warnings
 
 def BT_fenicsx_decay_profile(R_phys=100.0e-6,
                rho_phys=40.0e-6,
