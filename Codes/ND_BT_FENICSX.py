@@ -1,28 +1,28 @@
 # ==============================================================================
 # 1. ENVIRONMENT SETUP
 # ==============================================================================
-import dolfinx
 import numpy as np
-import ufl
 import time
-from dolfinx import mesh, fem, io
-from dolfinx.fem.petsc import LinearProblem
+import ufl
 from mpi4py import MPI
 from petsc4py import PETSc
+from dolfinx import fem, mesh
+from dolfinx.fem.petsc import assemble_matrix, assemble_vector
+
 
 def BT_fenicsx_decay(R_phys=100.0e-6,
-               rho_phys=40.0e-6,
-               D_phys=2.30e-9,
-               T2B_phys=2.0,
-               t_start=0.0,
-               t_final=10.0,
-               dt_phys=0.01,
-               NUM_ELEMS=100,
-               DEGREE=2,
-               SOLVER_TYPE='mumps',
-               comm=MPI.COMM_WORLD,
-               verbose=False,
-               export_files=False):
+                     rho_phys=40.0e-6,
+                     D_phys=2.30e-9,
+                     T2B_phys=2.0,
+                     t_start=0.0,
+                     t_final=10.0,
+                     dt_phys=0.01,
+                     NUM_ELEMS=100,
+                     DEGREE=2,
+                     SOLVER_TYPE='mumps',
+                     comm=MPI.COMM_WORLD,
+                     verbose=False,
+                     export_files=False):
     """
     Solve the transverse magnetization decay in spherical pores using the 
     dimensionless Bloch-Torrey equation via finite element method (FEM).
@@ -90,186 +90,223 @@ def BT_fenicsx_decay(R_phys=100.0e-6,
     
     The function is optimized for Bayesian inference, with minimal console output
     and file I/O unless explicitly requested.
-    """
-    
-    # ==========================================================================
-    # 1. LINEAR SOLVER CONFIGURATION
-    # ==========================================================================
-    def get_solver_options(solver_type):
-        """
-        Returns PETSc solver options for the selected direct solver.
-        
-        Parameters
-        ----------
-        solver_type : str
-            Solver type identifier.
-            
-        Returns
-        -------
-        dict
-            PETSc options dictionary.
-        """
-        opts = {"ksp_type": "preonly", "pc_type": "lu"}
-        
-        if solver_type == 'mumps':
-            opts["pc_factor_mat_solver_type"] = "mumps"
-        elif solver_type == 'umfpack':
-            opts["pc_factor_mat_solver_type"] = "umfpack"
-        elif solver_type == 'superlu':
-            opts["pc_factor_mat_solver_type"] = "superlu_dist"
-        # For 'default' or any other, PETSc uses its internal LU.
-        
-        return opts
 
+    **Algorithmic Optimizations:**
+
+    1.  **Vectorized Integration (The "Dot Product" Trick):**
+        Standard FEM integration ``assemble(u * dx)`` is computationally expensive 
+        inside a loop ($O(N_{cells})$). This implementation pre-calculates a 
+        static weight vector $\mathbf{w}$ representing the geometric integral 
+        of the basis functions:
+        $$ w_i = \int_{\Omega} \phi_i(x) r^2 dr $$
+        The total magnetization at step $n$ is then computed via a BLAS-1 
+        dot product, reducing complexity to $O(N_{dofs})$:
+        $$ M(t) = \mathbf{w} \cdot \mathbf{u}_n $$
+
+    2.  **LU Factorization Reuse:**
+        For a constant time step $\Delta t$, the system stiffness matrix $\mathbf{A}$ 
+        is time-invariant. The LU factorization is computed once during initialization 
+        and reused via backward substitution for all subsequent steps.
+
+    3.  **Static Memory Allocation:**
+        NumPy arrays for output data are pre-allocated to prevent dynamic resizing 
+        overhead. PETSc vectors are updated in-place.
+
+    4.  **Pointer Localization:**
+        Critical PETSc vector handles are dereferenced outside the time loop to 
+        bypass Python attribute lookup latency.
+    """
     # ==========================================================================
-    # 2. DIMENSIONLESS SCALING
+    # 1. PHYSICS & SCALING (Dimensionless Groups)
     # ==========================================================================
-    # Compute characteristic diffusion length
     diff_length = np.sqrt(D_phys * T2B_phys)
+    PHI_R_VAL   = R_phys / diff_length
+    ALPHA_VAL   = rho_phys * np.sqrt(T2B_phys / D_phys)
     
-    # Dimensionless parameters
-    PHI_R_VAL = R_phys / diff_length                   # Dimensionless radius
-    ALPHA_VAL = rho_phys * np.sqrt(T2B_phys / D_phys)  # Dimensionless rho
-    
-    # Dimensionless time parameters
+    # Time discretization (Dimensionless)
     TAU_START = t_start / T2B_phys
     TAU_FINAL = t_final / T2B_phys
     DT_VAL    = dt_phys / T2B_phys
-    
-    # MPI communicator
-    comm = comm
-    
+
     # ==========================================================================
-    # 3. FINITE ELEMENT MESH AND FUNCTION SPACE
+    # 2. MESH GENERATION & FUNCTION SPACES
     # ==========================================================================
-    # Create 1D interval [0, PHI_R_VAL] representing the radial coordinate
+    # 1D Interval Mesh scaled to dimensionless radius [0, PHI_R]
     domain = mesh.create_unit_interval(comm, NUM_ELEMS)
     domain.geometry.x[:, 0] *= PHI_R_VAL
     
-    # Continuous Galerkin function space
+    # Function Space: Continuous Galerkin (Lagrange)
     V = fem.functionspace(domain, ("CG", DEGREE))
     
-    # Define boundary at the pore wall (r = PHI_R_VAL)
-    def is_pore_wall(x):
-        return np.isclose(x[0], PHI_R_VAL, rtol=1e-10)
-    
+    # Boundary Marking (Surface of the sphere r = PHI_R)
     fdim = domain.topology.dim - 1
+    def is_pore_wall(x):
+        return np.isclose(x[0], PHI_R_VAL, rtol=1e-12)
+    
     boundary_facets = mesh.locate_entities_boundary(domain, fdim, is_pore_wall)
-    boundary_tags = mesh.meshtags(domain, fdim, boundary_facets,
+    boundary_tags = mesh.meshtags(domain, fdim, boundary_facets, 
                                   np.full_like(boundary_facets, 1))
     
-    # Integration measures
+    # Measures for integration
     dx = ufl.dx
     ds = ufl.Measure("ds", domain=domain, subdomain_data=boundary_tags)
     
-    # Trial and test functions, and functions for current and previous solutions
-    u, v = ufl.TrialFunction(V), ufl.TestFunction(V)
-    u_n, u_curr = fem.Function(V), fem.Function(V)
+    # ==========================================================================
+    # 3. VARIATIONAL FORMULATION (Pre-Compiled)
+    # ==========================================================================
+    # Trial (u) and Test (v) functions
+    u = ufl.TrialFunction(V)
+    v = ufl.TestFunction(V)
     
-    # Constants for dimensionless parameters
+    # Solution containers (Previous and Current steps)
+    u_n    = fem.Function(V)
+    u_curr = fem.Function(V)
+    
+    # Initial Condition: Uniform magnetization M(r,0) = 1.0
+    u_n.interpolate(lambda x: np.ones_like(x[0]))
+    
+    # UFL Constants (Avoids recompilation if parameters change)
     dt    = fem.Constant(domain, PETSc.ScalarType(DT_VAL))
     alpha = fem.Constant(domain, PETSc.ScalarType(ALPHA_VAL))
     phi_R = fem.Constant(domain, PETSc.ScalarType(PHI_R_VAL))
     
-    # Spatial coordinate and radial variable
+    # Spherical Coordinate System (Jacobian r^2 term)
     x = ufl.SpatialCoordinate(domain)
-    phi = x[0]  # radial coordinate
+    phi = x[0] # Radial coordinate r
     
-    # Initial condition: uniform magnetization M(r,0) = 1
-    u_n.interpolate(lambda x: np.ones_like(x[0]))
+    # --- Bilinear Form (LHS) ---
+    # Time-independent matrix 'A' for Backward Euler scheme:
+    # (u - dt*Laplacian(u) + dt*u)*v * r^2
+    a = (u * v * phi**2 * dx +
+         dt * ufl.dot(ufl.grad(u), ufl.grad(v)) * phi**2 * dx +
+         dt * u * v * phi**2 * dx +
+         dt * alpha * phi_R**2 * u * v * ds(1))
+    
+    # --- Linear Form (RHS) ---
+    # Time-dependent vector 'b': u_n * v * r^2
+    L = u_n * v * phi**2 * dx
+    
+    # Compile UFL forms
+    bilinear_form = fem.form(a)
+    linear_form   = fem.form(L)
     
     # ==========================================================================
-    # 4. VARIATIONAL FORMULATION (BACKWARD EULER)
+    # 4. ALGEBRAIC SETUP & SOLVER CONFIGURATION
     # ==========================================================================
-    # Weak form of the dimensionless Bloch-Torrey equation with spherical symmetry.
-    # The Jacobian r² (phi**2) is included in all volume integrals.
-    F_lhs = (u * v * phi**2 * dx +
-             dt * ufl.dot(ufl.grad(u), ufl.grad(v)) * phi**2 * dx +
-             dt * u * v * phi**2 * dx +
-             dt * alpha * phi_R**2 * u * v * ds(1))
+    # A. Assemble Stiffness Matrix (Done ONCE)
+    A = assemble_matrix(bilinear_form)
+    A.assemble()
     
-    F_rhs = u_n * v * phi**2 * dx
+    # B. Create RHS Vector
+    # Uses matrix structure to determine compatible vector layout (Robust API)
+    b = A.createVecLeft()
     
-    # Linear problem with specified solver options
-    solver_options = get_solver_options(SOLVER_TYPE)
-    problem = LinearProblem(F_lhs, F_rhs,
-                            petsc_options_prefix="solver",
-                            petsc_options=solver_options)
+    # C. Configure Linear Solver (KSP)
+    solver = PETSc.KSP().create(domain.comm)
+    solver.setOperators(A)
+    solver.setType(PETSc.KSP.Type.PREONLY) # Direct solver mode
+    solver.getPC().setType(PETSc.PC.Type.LU)
     
-    # Analytical normalization factor for spherical volume
+    # Set factorization package based on availability
+    if SOLVER_TYPE == 'mumps':
+        try:
+            solver.getPC().setFactorSolverType("mumps")
+        except PETSc.Error:
+            if comm.rank == 0: print("WARNING: MUMPS not available, using default LU.")
+    elif SOLVER_TYPE == 'superlu':
+        solver.getPC().setFactorSolverType("superlu_dist")
+    elif SOLVER_TYPE == 'umfpack':
+        solver.getPC().setFactorSolverType("umfpack")
+    
+    solver.setFromOptions()
+    
+    # ==========================================================================
+    # 5. OPTIMIZATION: PRE-CALCULATED WEIGHT VECTOR
+    # ==========================================================================
+    # Instead of assembling scalar integrals at every step, we compute a 
+    # geometric weight vector. The integral becomes a dot product.
+    # W_i = Integral(v_i * r^2 * dr)
+    weight_form = fem.form(v * phi**2 * dx)
+    weight_vec  = assemble_vector(weight_form) 
+    
+    # Finalize assembly in case of parallel distribution
+    weight_vec.ghostUpdate(addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE)
+    
+    # Analytical normalization factor for spherical volume (3/R^3)
     norm_factor = 3.0 / (PHI_R_VAL**3)
     
     # ==========================================================================
-    # 5. TIME INTEGRATION LOOP
+    # 6. TIME STEPPING LOOP (HIGH PERFORMANCE)
     # ==========================================================================
     duration_tau = TAU_FINAL - TAU_START
     steps = int(np.round(duration_tau / DT_VAL))
     
-    # Arrays to store time and raw (un-normalized) signal
-    time_array = []
-    signal_raw = []
+    # Static Memory Allocation (NumPy) for results
+    time_array = np.zeros(steps + 1, dtype=np.float64)
+    signal_raw = np.zeros(steps + 1, dtype=np.float64)
     
-    # Compute initial magnetization signal by volume integration
-    vol_int_0 = fem.assemble_scalar(fem.form(u_n * phi**2 * dx))
-    vol_int_0 = comm.allreduce(vol_int_0, op=MPI.SUM)
-    signal_0 = norm_factor * vol_int_0
+    # Initial State (t=0)
+    # Note: u_n.x.petsc_vec contains the initial condition values
+    signal_0 = norm_factor * weight_vec.dot(u_n.x.petsc_vec)
     
-    time_array.append(t_start)
-    signal_raw.append(signal_0)
+    time_array[0] = t_start
+    signal_raw[0] = signal_0
     
-    # Optional verbose output
-    if verbose and comm.rank == 0:
+    my_rank = comm.rank
+    if verbose and my_rank == 0:
         start_time = time.perf_counter()
-        print(f"Starting simulation: {steps} time steps")
-        print(f"Dimensionless radius φ_R = {PHI_R_VAL:.3f}")
-        print(f"Dimensionless rho α = {ALPHA_VAL:.3f}")
+        print(f"-> Starting Simulation: {steps} steps")
     
-    # Time stepping loop
+    # --- Localizing references for speed (Avoid attribute lookups in loop) ---
+    u_curr_vec = u_curr.x.petsc_vec
+    u_n_array = u_n.x.array
+    u_curr_array = u_curr.x.array
+    
+    # --- MAIN LOOP ---
     for step in range(steps):
-        # Solve linear system for current time step
-        u_curr = problem.solve()
+        # 1. Update RHS Vector (b)
+        #    Reset vector and re-assemble linear form (fast op)
+        with b.localForm() as loc_b:
+            loc_b.set(0)
+        assemble_vector(b, linear_form)
         
-        # Update dimensionless and physical time
-        curr_tau = TAU_START + (step + 1) * DT_VAL
-        curr_phys_time = curr_tau * T2B_phys
+        # 2. Solve Linear System
+        #    Uses pre-factored LU decomposition. Writes result to u_curr_vec.
+        solver.solve(b, u_curr_vec)
+        u_curr.x.scatter_forward() # Sync ghost values
         
-        # Compute volume integral of magnetization
-        vol_int = fem.assemble_scalar(fem.form(u_curr * phi**2 * dx))
-        vol_int = comm.allreduce(vol_int, op=MPI.SUM)
-        signal = norm_factor * vol_int
+        # 3. Compute Magnetization (Instantaneous Dot Product)
+        #    Replaces expensive fem.assemble_scalar()
+        vol_int = weight_vec.dot(u_curr_vec)
         
-        # Store results on rank 0
-        if comm.rank == 0:
-            time_array.append(curr_phys_time)
-            signal_raw.append(signal)
-        
-        # Update previous solution for next time step
-        u_n.x.array[:] = u_curr.x.array[:]
-    
-    # Optional verbose output: timing
-    if verbose and comm.rank == 0:
+        # 4. Store Results (Direct Array Access)
+        if my_rank == 0:
+            signal_raw[step+1] = norm_factor * vol_int
+            time_array[step+1] = (TAU_START + (step + 1) * DT_VAL) * T2B_phys
+            
+        # 5. Update Previous Step (Fast Memory Copy)
+        u_n_array[:] = u_curr_array[:]
+
+    # ==========================================================================
+    # 7. FINALIZATION & OUTPUT
+    # ==========================================================================
+    if verbose and my_rank == 0:
         end_time = time.perf_counter()
-        print(f"Simulation completed in {end_time - start_time:.2f} seconds")
-    
-    # ==========================================================================
-    # 6. NORMALIZATION AND OUTPUT
-    # ==========================================================================
-    if comm.rank == 0:
-        # Convert to numpy arrays
-        time_array = np.array(time_array)
-        signal_raw = np.array(signal_raw)
-        
-        # Normalize signal by its initial value
-        signal_norm = signal_raw / signal_raw[0]
-        
-        # Optional file export
+        print(f"-> Simulation completed in {end_time - start_time:.4f} s")
+
+    if my_rank == 0:
+        # Signal Normalization M(t)/M(0)
+        if signal_raw[0] > 1e-14:
+            signal_norm = signal_raw / signal_raw[0]
+        else:
+            signal_norm = signal_raw
+
         if export_files:
             np.savetxt("nmr_decay.txt",
                        np.column_stack((time_array, signal_norm)),
-                       header="Time_s Signal",
+                       header="Time_s Signal_Norm",
                        comments='')
-        
+            
         return time_array, signal_norm
-    
-    # For non-zero MPI ranks, return None
+
     return None, None
