@@ -16,7 +16,7 @@ __institution__ = "Instituto Mexicano del Petróleo (IMP)"
 # Optimization: Suppress verbose FEniCS/UFL compilation logs
 set_log_level(LogLevel.ERROR)
 
-def BT_fenics_decay_ULTRA(
+def BT_fenics_decay(
     R_phys=100.0e-6,
     rho_phys=40.0e-6,
     D_phys=2.30e-9,
