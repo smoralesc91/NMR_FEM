@@ -6,12 +6,12 @@ import time
 try:
     from petsc4py import PETSc
 except ImportError:
-    raise ImportError("The 'ULTRA' optimization requires 'petsc4py' to access underlying C++ pointers.")
+    raise ImportError("The optimization requires 'petsc4py' to access underlying C++ pointers.")
 
 # Metadata
 __author__ = "Dr. Sinai Morales Chávez"
-__version__ = "2.1_ULTRA_Production"
-__institution__ = "Instituto Mexicano del Petróleo (IMP)"
+__version__ = "2.1"
+__institution__ = "IMP"
 
 # Optimization: Suppress verbose FEniCS/UFL compilation logs
 set_log_level(LogLevel.ERROR)
